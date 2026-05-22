@@ -307,10 +307,6 @@ void DRS4Frontend::apply_board_config(int i)
       midas::odb b;
       b.connect(path);
 
-      // Frequency
-      double freq = odb_get<double>(b, "Frequency (GHz)", 5.0);
-      m_boards[i]->SetFrequency(freq, true);
-
       // Input range: ODB stores string like "-0.5V to +0.5V" or "0V to +1V"
       // SetInputRange expects center voltage: -0.5V range -> 0.0, 0V..+1V range -> 0.5
       std::string input_range_str = odb_get<std::string>(b, "InputRange", "-0.5V to +0.5V");
@@ -401,13 +397,17 @@ void DRS4Frontend::apply_board_config(int i)
 
       // ---- REG_CONFIG, REG_TRG_DELAY, DAC levels ----
 
-      // DominoMode=1 (continuous) for live preview.  The domino
-      // keeps running so SoftTrigger can latch the current position
-      // at any time — DominoMode=0 single sweep may not update the
-      // stop cell on natural completion (only on trigger events).
+      // Frequency FIRST — SetFrequency internally starts domino,
+      // waits for PLL lock, then calls SoftTrigger. Do NOT call
+      // StartDomino() again until after SoftTrigger in the capture flow.
+      double freq = odb_get<double>(b, "Frequency (GHz)", 5.0);
+      m_boards[i]->SetFrequency(freq, true);
+
+      // DominoMode=1 (continuous) for live preview.  Must be set AFTER
+      // SetFrequency so the config register gets the right domino mode.
       m_boards[i]->SetDominoMode(1);
 
-      // Trigger delay
+      // Trigger delay (ns)
       int delay = odb_get<int>(b, "TriggerDelayNs", 0);
       m_boards[i]->SetTriggerDelayNs(delay);
 
@@ -1138,6 +1138,27 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
 
       m_boards[i]->TransferWaves(0, 8);
       int trigger_cell = m_boards[i]->GetTriggerCell(0);
+
+      // Firmware v30000 may always report tc=0. Detect the true trigger
+      // position from waveform discontinuities: the largest inter-sample
+      // step marks where the circular buffer wraps (data starts fresh).
+      if (trigger_cell == 0) {
+         float wf[DRS4_NSAMPLES];
+         m_boards[i]->GetWave(0, 0, wf, false, 0);
+         float prev = wf[DRS4_NSAMPLES - 1];
+         float max_diff = 0;
+         int max_idx = 0;
+         for (int s = 0; s < DRS4_NSAMPLES; s++) {
+            float diff = fabsf(wf[s] - prev);
+            if (diff > max_diff) {
+               max_diff = diff;
+               max_idx = s;
+            }
+            prev = wf[s];
+         }
+         if (max_diff > 10.0f)  // require >10mV step to confirm real trigger
+            trigger_cell = max_idx;
+      }
 
       float freq = (float)m_boards[i]->GetTrueFrequency();
       bool vcal = m_boards[i]->IsVoltageCalibrationValid();
