@@ -1,0 +1,10 @@
+*.o
+*.o.bak
+*.o.test
+drs_frontend
+*.tmp
+*.swp
+*~
+midas.log
+web/drs4_snapshot.json
+wv.csv

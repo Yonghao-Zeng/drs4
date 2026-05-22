@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html>
+<head>
+   <title>DRS4 Oscilloscope</title>
+   <meta charset="utf-8">
+   <style>
+      * { box-sizing: border-box; }
+      body {
+         font-family: Arial, sans-serif;
+         margin: 0;
+         padding: 20px;
+         background: #f5f5f5;
+         color: #333;
+      }
+      h1 { color: #0066cc; margin-bottom: 15px; text-align: center; }
+
+      .container { max-width: 1200px; margin: 0 auto; }
+
+      .controls {
+         background: #fff; padding: 10px 14px; border-radius: 8px;
+         margin-bottom: 10px; display: flex; flex-wrap: wrap;
+         gap: 10px; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+      .control-group { display: flex; align-items: center; gap: 5px; }
+      .control-group label { font-size: 12px; color: #666; white-space: nowrap; }
+
+      select, input[type="number"] {
+         background: #fff; color: #333; border: 1px solid #0066cc;
+         padding: 4px 6px; border-radius: 4px; font-size: 12px;
+      }
+      input[type="number"] { width: 65px; }
+      input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+      input[type="range"] { width: 80px; cursor: pointer; }
+
+      .section-label {
+         font-size: 12px; color: #888; font-weight: bold;
+         margin-right: 5px; white-space: nowrap;
+      }
+
+      .scope-container {
+         background: #fff; border: 2px solid #0066cc;
+         border-radius: 8px; padding: 10px; margin-bottom: 15px;
+         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+      canvas { display: block; margin: 0 auto; background: #000; border-radius: 4px; }
+
+      .ch-row {
+         display: flex; align-items: center; gap: 12px;
+         padding: 3px 0;
+      }
+      .ch-color-dot {
+         width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+      }
+      .ch-label { font-size: 11px; font-weight: bold; width: 24px; }
+
+      .info-panel {
+         background: #fff; padding: 12px; border-radius: 8px;
+         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+      .info-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+      .info-item {
+         padding: 5px 10px; background: #f0f0f0; border-radius: 4px; min-width: 110px;
+      }
+      .info-item .lbl { color: #888; font-size: 11px; }
+      .info-item .val { color: #0066cc; font-weight: bold; font-size: 13px; }
+   </style>
+</head>
+<body>
+<div class="container">
+   <h1>DRS4 Oscilloscope</h1>
+
+   <!-- Main settings -->
+   <div class="controls">
+      <span class="section-label">Acquisition:</span>
+      <div class="control-group">
+         <label>Board:</label>
+         <select id="BoardSelect"><option value="0">Board 0</option></select>
+      </div>
+      <div class="control-group">
+         <label>Trigger Mode:</label>
+         <select id="TriggerMode">
+            <option value="Auto">Auto (Free-Run)</option>
+            <option value="Normal">Normal (Triggered)</option>
+         </select>
+      </div>
+      <div class="control-group">
+         <label>Logic:</label>
+         <select id="TriggerLogic">
+            <option value="OR">OR</option>
+            <option value="AND">AND</option>
+         </select>
+      </div>
+      <div class="control-group">
+         <label>Frequency:</label>
+         <select id="Frequency">
+            <option value="5.0">5 GHz</option>
+            <option value="2.5">2.5 GHz</option>
+            <option value="1.0">1 GHz</option>
+            <option value="0.5">0.5 GHz</option>
+         </select>
+      </div>
+      <span class="section-label" style="margin-left:8px;">Display:</span>
+      <div class="control-group">
+         <label>Time/Div:</label>
+         <select id="TimeDiv">
+            <option value="1">1 ns</option><option value="2">2 ns</option>
+            <option value="5">5 ns</option><option value="10" selected>10 ns</option>
+            <option value="20">20 ns</option><option value="50">50 ns</option>
+            <option value="100">100 ns</option><option value="200">200 ns</option>
+            <option value="500">500 ns</option><option value="1000">1 us</option>
+         </select>
+      </div>
+      <div class="control-group">
+         <label>V/div:</label>
+         <select id="VoltDiv">
+            <option value="10">10 mV</option><option value="20">20 mV</option>
+            <option value="50">50 mV</option><option value="100" selected>100 mV</option>
+            <option value="200">200 mV</option><option value="500">500 mV</option>
+            <option value="1000">1 V</option>
+         </select>
+      </div>
+   </div>
+
+   <!-- Trigger settings -->
+   <div class="controls">
+      <span class="section-label">Trigger Source (ODB EnableCH):</span>
+      <div class="control-group"><label>CH1:</label><input type="checkbox" id="EnableCH1" checked></div>
+      <div class="control-group"><label>CH2:</label><input type="checkbox" id="EnableCH2" checked></div>
+      <div class="control-group"><label>CH3:</label><input type="checkbox" id="EnableCH3" checked></div>
+      <div class="control-group"><label>CH4:</label><input type="checkbox" id="EnableCH4" checked></div>
+      <span class="section-label" style="margin-left:10px;">Trigger Level (V):</span>
+      <div class="control-group"><label>CH1:</label><input type="number" id="TriggerLevel_CH0" value="0.05" step="0.01"></div>
+      <div class="control-group"><label>CH2:</label><input type="number" id="TriggerLevel_CH1" value="0.05" step="0.01"></div>
+      <div class="control-group"><label>CH3:</label><input type="number" id="TriggerLevel_CH2" value="0.05" step="0.01"></div>
+      <div class="control-group"><label>CH4:</label><input type="number" id="TriggerLevel_CH3" value="0.05" step="0.01"></div>
+      <div class="control-group" style="margin-left:auto;">
+         <button id="calibrateBtn" style="background:#0066cc;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:bold;">Calibrate</button>
+      </div>
+   </div>
+
+   <!-- Channel display controls: visibility + vertical position -->
+   <div class="controls">
+      <span class="section-label">Channel Display:</span>
+      <div class="ch-row">
+         <span style="color:#00cc00;font-size:18px;">&#x25CF;</span>
+         <span class="ch-label">CH1</span>
+         <label>Show:</label><input type="checkbox" id="ShowCH1" checked>
+         <label>Pos (mV):</label><input type="range" id="PosCH1" min="-500" max="500" value="0" step="10">
+         <input type="number" id="PosValCH1" value="0" step="10" style="width:60px;">
+      </div>
+      <div class="ch-row">
+         <span style="color:#ff0000;font-size:18px;">&#x25CF;</span>
+         <span class="ch-label">CH2</span>
+         <label>Show:</label><input type="checkbox" id="ShowCH2" checked>
+         <label>Pos (mV):</label><input type="range" id="PosCH2" min="-500" max="500" value="0" step="10">
+         <input type="number" id="PosValCH2" value="0" step="10" style="width:60px;">
+      </div>
+      <div class="ch-row">
+         <span style="color:#cc9900;font-size:18px;">&#x25CF;</span>
+         <span class="ch-label">CH3</span>
+         <label>Show:</label><input type="checkbox" id="ShowCH3" checked>
+         <label>Pos (mV):</label><input type="range" id="PosCH3" min="-500" max="500" value="0" step="10">
+         <input type="number" id="PosValCH3" value="0" step="10" style="width:60px;">
+      </div>
+      <div class="ch-row">
+         <span style="color:#0099cc;font-size:18px;">&#x25CF;</span>
+         <span class="ch-label">CH4</span>
+         <label>Show:</label><input type="checkbox" id="ShowCH4" checked>
+         <label>Pos (mV):</label><input type="range" id="PosCH4" min="-500" max="500" value="0" step="10">
+         <input type="number" id="PosValCH4" value="0" step="10" style="width:60px;">
+      </div>
+   </div>
+
+   <!-- Oscilloscope display -->
+   <div class="scope-container">
+      <canvas id="scope" width="1100" height="500"></canvas>
+   </div>
+
+   <!-- Info panel -->
+   <div class="info-panel">
+      <div class="info-row">
+         <div class="info-item"><div class="lbl">Status</div><div class="val" id="status">-</div></div>
+         <div class="info-item"><div class="lbl">Board</div><div class="val" id="board">-</div></div>
+         <div class="info-item"><div class="lbl">True Freq</div><div class="val" id="freq">-</div></div>
+         <div class="info-item"><div class="lbl">Time Range</div><div class="val" id="trange">-</div></div>
+         <div class="info-item"><div class="lbl">Trigger Cell</div><div class="val" id="tc">-</div></div>
+         <div class="info-item"><div class="lbl">Triggered</div><div class="val" id="trig">-</div></div>
+         <div class="info-item"><div class="lbl">Trigger Rate</div><div class="val" id="rate">-</div></div>
+         <div class="info-item"><div class="lbl">Last Update</div><div class="val" id="time">-</div></div>
+      </div>
+      <div class="info-row">
+         <div class="info-item"><div class="lbl">CH1 Range</div><div class="val" id="ch0">-</div></div>
+         <div class="info-item"><div class="lbl">CH2 Range</div><div class="val" id="ch1">-</div></div>
+         <div class="info-item"><div class="lbl">CH3 Range</div><div class="val" id="ch2">-</div></div>
+         <div class="info-item"><div class="lbl">CH4 Range</div><div class="val" id="ch3">-</div></div>
+      </div>
+   </div>
+</div>
+
+<script src="midas.js"></script>
+<script>
+// ---- Global state ----
+var snapshot = null;
+var selectedBoard = 0;
+var ctx = document.getElementById('scope').getContext('2d');
+var colors = ['#00cc00', '#ff0000', '#cc9900', '#0099cc'];
+
+// Display parameters
+var timeDiv = 10;      // ns per horizontal division
+var voltDiv = 100;     // mV per vertical division
+var posOffset = [0, 0, 0, 0];  // vertical position offset per channel (mV)
+var showChannel = [true, true, true, true];  // visibility per channel
+
+var canvasWidth = 1100;
+var canvasHeight = 500;
+var gridLeft = 60;
+var gridRight = 20;
+var gridTop = 20;
+var gridBottom = 40;
+
+// Guard: set to true while loadSettings() is running
+var _loadingSettings = false;
+
+// Track current ODB values to detect external changes
+var _currentOdbValues = {};
+
+// ODB settings keys
+var SETTINGS_KEYS = [
+   'TriggerMode', 'TriggerLogic', 'Frequency (GHz)',
+   'TriggerLevel_CH0 (V)', 'TriggerLevel_CH1 (V)',
+   'TriggerLevel_CH2 (V)', 'TriggerLevel_CH3 (V)',
+   'EnableCH1', 'EnableCH2', 'EnableCH3', 'EnableCH4'
+];
+var SETTINGS_PREFIX = '/Equipment/DRS4/Settings/Boards/Board';
+
+// ---- Coordinate transforms ----
+// Positive offset shifts the trace upward on screen (higher mV = higher on scope)
+function voltToY(v, chOffset) {
+   var screenHeight = canvasHeight - gridTop - gridBottom;
+   var halfHeight = screenHeight / 2;
+   var screenMv = voltDiv * 5;  // mV for 5 divisions (half screen)
+   var centerY = gridTop + halfHeight;
+   return centerY - ((v + chOffset) / screenMv) * halfHeight;
+}
+
+function timeToX(t) {
+   var screenWidth = canvasWidth - gridLeft - gridRight;
+   var screenNs = timeDiv * 10;  // 10 horizontal divisions
+   return gridLeft + (t / screenNs) * screenWidth;
+}
+
+// ---- Drawing ----
+function drawGrid() {
+   var sw = canvasWidth - gridLeft - gridRight;
+   var sh = canvasHeight - gridTop - gridBottom;
+
+   ctx.fillStyle = '#000';
+   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+   // Vertical lines (10 divisions)
+   ctx.strokeStyle = '#222';
+   ctx.lineWidth = 1;
+   for (var i = 0; i <= 10; i++) {
+      var x = gridLeft + (i / 10) * sw;
+      ctx.beginPath(); ctx.moveTo(x, gridTop); ctx.lineTo(x, gridTop + sh); ctx.stroke();
+   }
+
+   // Horizontal lines (5 divisions above center, 5 below)
+   for (var i = 0; i <= 10; i++) {
+      var y = gridTop + (i / 10) * sh;
+      ctx.strokeStyle = (i === 5) ? '#555' : '#222';
+      ctx.beginPath(); ctx.moveTo(gridLeft, y); ctx.lineTo(gridLeft + sw, y); ctx.stroke();
+   }
+
+   // Time axis labels (ns)
+   ctx.fillStyle = '#888';
+   ctx.font = '10px Arial';
+   ctx.textAlign = 'center';
+   for (var i = 0; i <= 10; i++) {
+      var t = (i - 5) * timeDiv;
+      var x = gridLeft + (i / 10) * sw;
+      var label;
+      if (Math.abs(t) >= 1000) label = (t/1000).toFixed(1) + ' us';
+      else label = t.toFixed(0) + ' ns';
+      ctx.fillText(label, x, gridTop + sh + 15);
+   }
+   ctx.fillStyle = '#aaa';
+   ctx.font = '11px Arial';
+   ctx.fillText('Time', gridLeft + sw / 2, canvasHeight - 5);
+
+   // Voltage axis labels (mV)
+   ctx.textAlign = 'right';
+   for (var i = 0; i <= 10; i++) {
+      var v = (5 - i) * voltDiv;  // +5 to -5 divisions * voltDiv
+      var y = gridTop + (i / 10) * sh;
+      ctx.fillStyle = '#888';
+      ctx.font = '10px Arial';
+      ctx.fillText(v.toFixed(0), gridLeft - 5, y + 3);
+   }
+   ctx.save();
+   ctx.translate(15, gridTop + sh / 2);
+   ctx.rotate(-Math.PI / 2);
+   ctx.fillStyle = '#aaa';
+   ctx.font = '11px Arial';
+   ctx.textAlign = 'center';
+   ctx.fillText('Voltage (mV)', 0, 0);
+   ctx.restore();
+}
+
+function drawWaveform() {
+   drawGrid();
+
+   if (!snapshot || !snapshot.channels) return;
+
+   var sw = canvasWidth - gridLeft - gridRight;
+   var sh = canvasHeight - gridTop - gridBottom;
+   var time = snapshot.channels[0].time;
+
+   for (var ch = 0; ch < 4; ch++) {
+      if (!showChannel[ch]) continue;
+      if (ch >= snapshot.channels.length) continue;
+
+      var wave = snapshot.channels[ch].wave;
+      var offset = posOffset[ch];
+
+      // Draw waveform
+      ctx.strokeStyle = colors[ch];
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+
+      var started = false;
+      for (var i = 0; i < wave.length; i++) {
+         var x = timeToX(time[i]);
+         if (x < gridLeft || x > gridLeft + sw) { started = false; continue; }
+
+         var y = voltToY(wave[i], offset);
+         y = Math.max(gridTop, Math.min(gridTop + sh, y));
+
+         if (!started) { ctx.moveTo(x, y); started = true; }
+         else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Dashed trigger-level line
+      var tlEl = document.getElementById('TriggerLevel_CH' + ch);
+      if (tlEl) {
+         var tl = parseFloat(tlEl.value) * 1000; // V to mV
+         if (!isNaN(tl)) {
+            var yl = voltToY(tl, offset);
+            yl = Math.max(gridTop, Math.min(gridTop + sh, yl));
+            ctx.strokeStyle = colors[ch];
+            ctx.lineWidth = 0.5;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath(); ctx.moveTo(gridLeft, yl); ctx.lineTo(gridLeft + sw, yl); ctx.stroke();
+            ctx.setLineDash([]);
+         }
+      }
+
+      // Draw channel label at the vertical position (left side marker)
+      var labelY = voltToY(0, offset);
+      labelY = Math.max(gridTop + 10, Math.min(gridTop + sh - 10, labelY));
+      ctx.fillStyle = colors[ch];
+      ctx.font = 'bold 11px Arial';
+      ctx.textAlign = 'left';
+      ctx.fillText('CH' + (ch+1), gridLeft + 4, labelY + 4);
+   }
+
+   // Update info panel
+   document.getElementById('board').textContent = 'Board ' + (snapshot.board || 0);
+   document.getElementById('freq').textContent = (snapshot.freq || 0).toFixed(3) + ' GHz';
+   document.getElementById('tc').textContent = snapshot.trigger_cell || 0;
+   document.getElementById('trig').textContent = snapshot.triggered || 'no';
+   document.getElementById('time').textContent = snapshot.timestamp || '-';
+
+   // Time range
+   var tMin = time[0], tMax = time[time.length-1];
+   document.getElementById('trange').textContent = tMin.toFixed(1) + ' - ' + tMax.toFixed(1) + ' ns';
+
+   // Per-channel min/max
+   for (var ch = 0; ch < 4; ch++) {
+      if (ch < snapshot.channels.length) {
+         var wave = snapshot.channels[ch].wave;
+         var mn = Math.min.apply(null, wave);
+         var mx = Math.max.apply(null, wave);
+         document.getElementById('ch' + ch).textContent = mn.toFixed(1) + ' / ' + mx.toFixed(1) + ' mV';
+      }
+   }
+}
+
+// ---- Snapshot loading ----
+function loadSnapshot() {
+   var xhr = new XMLHttpRequest();
+   xhr.open('GET', '/drs4_snapshot.json?_=' + Date.now(), true);
+   xhr.onreadystatechange = function() {
+      if (xhr.readyState === 4 && xhr.status === 200) {
+         try {
+            snapshot = JSON.parse(xhr.responseText);
+            drawWaveform();
+         } catch (e) { /* parse error, keep old */ }
+      }
+   };
+   xhr.send();
+
+   // Trigger rate from ODB
+   if (typeof mjsonrpc_call === 'function') {
+      mjsonrpc_call('db_get_values', { paths: ['/Equipment/DRS4/Settings/TrgRate_B0'] }).then(function(rpc) {
+         try {
+            var rate = Number(rpc.result.data[0]) || 0;
+            document.getElementById('rate').textContent = rate.toFixed(1) + ' Hz';
+         } catch(e) {}
+      }).catch(function() {});
+   }
+}
+
+// ---- ODB settings load ----
+function loadSettings() {
+   var prefix = SETTINGS_PREFIX + selectedBoard + '/';
+   var paths = SETTINGS_KEYS.map(function(k) { return prefix + k; });
+
+   if (typeof mjsonrpc_call !== 'function') return;
+
+   mjsonrpc_call('db_get_values', { paths: paths }).then(function(rpc) {
+      try {
+         var v = rpc.result.data;
+         if (!v || !v.length) return;
+
+         // Build cache of raw values for change-detection
+         var newValues = {};
+         for (var k = 0; k < SETTINGS_KEYS.length; k++) {
+            newValues[SETTINGS_KEYS[k]] = String(v[k]);
+         }
+
+         // Only update UI if ODB values actually differ
+         var needsUpdate = false;
+         for (var k = 0; k < SETTINGS_KEYS.length; k++) {
+            if (_currentOdbValues[SETTINGS_KEYS[k]] !== newValues[SETTINGS_KEYS[k]]) {
+               needsUpdate = true;
+               break;
+            }
+         }
+         if (!needsUpdate) return;
+
+         _currentOdbValues = newValues;
+
+         // Set guard so change handlers don't write back
+         _loadingSettings = true;
+
+         document.getElementById('TriggerMode').value = (v[0] === 'Normal') ? 'Normal' : 'Auto';
+         document.getElementById('TriggerLogic').value = (v[1] === 'AND') ? 'AND' : 'OR';
+         document.getElementById('Frequency').value = String(v[2] || 5.0);
+         document.getElementById('TriggerLevel_CH0').value = Number(v[3]) || 0;
+         document.getElementById('TriggerLevel_CH1').value = Number(v[4]) || 0;
+         document.getElementById('TriggerLevel_CH2').value = Number(v[5]) || 0;
+         document.getElementById('TriggerLevel_CH3').value = Number(v[6]) || 0;
+         document.getElementById('EnableCH1').checked = Boolean(v[7]);
+         document.getElementById('EnableCH2').checked = Boolean(v[8]);
+         document.getElementById('EnableCH3').checked = Boolean(v[9]);
+         document.getElementById('EnableCH4').checked = Boolean(v[10]);
+
+         // Release guard after change events flush
+         setTimeout(function() { _loadingSettings = false; }, 100);
+      } catch(e) { console.log('loadSettings error:', e); }
+   }).catch(function(err) { console.log('loadSettings RPC error:', err); });
+}
+
+// ---- Save single setting to ODB ----
+function saveSetting(key, value) {
+   if (_loadingSettings) return;
+   if (typeof mjsonrpc_call !== 'function') return;
+
+   var path = SETTINGS_PREFIX + selectedBoard + '/' + key;
+   mjsonrpc_call('db_paste', { paths: [path], values: [value] }).then(function(rpc) {
+      var stat = (rpc.result && rpc.result.status) ? rpc.result.status[0] : -999;
+      document.getElementById('status').textContent = 'Save ' + key + '=' + value + ' status=' + stat;
+      if (stat === 1) {
+         _currentOdbValues[key] = String(value);
+      } else {
+         console.log('saveSetting FAILED:', key, '=', value, 'status=', stat, 'rpc=', JSON.stringify(rpc));
+      }
+   }).catch(function(err) {
+      console.log('saveSetting error:', err);
+      document.getElementById('status').textContent = 'Save error: ' + err;
+   });
+}
+
+function startCalibration() {
+   if (typeof mjsonrpc_call !== 'function') return;
+   mjsonrpc_call('db_paste', {
+      paths: ['/Equipment/DRS4/Settings/DoCalibrate'],
+      values: [true]
+   }).then(function() {
+      document.getElementById('status').textContent = 'Calibrating...';
+   }).catch(function() {
+      document.getElementById('status').textContent = 'Calib error';
+   });
+}
+
+// ---- localStorage persistence ----
+function saveDisplaySettings() {
+   var settings = {
+      timeDiv: timeDiv,
+      voltDiv: voltDiv,
+      posOffset: posOffset
+   };
+   try { localStorage.setItem('drs4_display', JSON.stringify(settings)); } catch(e) {}
+}
+
+function loadDisplaySettings() {
+   try {
+      var raw = localStorage.getItem('drs4_display');
+      if (raw) {
+         var s = JSON.parse(raw);
+         if (s.timeDiv) timeDiv = s.timeDiv;
+         if (s.voltDiv) voltDiv = s.voltDiv;
+         if (s.posOffset) posOffset = s.posOffset;
+      }
+   } catch(e) {}
+}
+
+function applyDisplaySettings() {
+   document.getElementById('TimeDiv').value = timeDiv;
+   document.getElementById('VoltDiv').value = voltDiv;
+   for (var ch = 1; ch <= 4; ch++) {
+      var slider = document.getElementById('PosCH' + ch);
+      var num = document.getElementById('PosValCH' + ch);
+      if (slider) slider.value = posOffset[ch-1];
+      if (num) num.value = posOffset[ch-1];
+   }
+}
+
+// ---- Event wiring ----
+function setup() {
+   // Restore persisted display settings
+   loadDisplaySettings();
+   applyDisplaySettings();
+
+   // Board selector
+   document.getElementById('BoardSelect').addEventListener('change', function() {
+      selectedBoard = parseInt(this.value);
+      loadSettings();
+   });
+
+   // Time/Div and V/div (display only, persist to localStorage)
+   document.getElementById('TimeDiv').addEventListener('change', function() {
+      timeDiv = parseInt(this.value);
+      saveDisplaySettings();
+      drawWaveform();
+   });
+   document.getElementById('VoltDiv').addEventListener('change', function() {
+      voltDiv = parseInt(this.value);
+      saveDisplaySettings();
+      drawWaveform();
+   });
+
+   // Trigger Mode -> ODB
+   document.getElementById('TriggerMode').addEventListener('change', function() {
+      saveSetting('TriggerMode', this.value);
+   });
+
+   // Trigger Logic -> ODB
+   document.getElementById('TriggerLogic').addEventListener('change', function() {
+      saveSetting('TriggerLogic', this.value);
+   });
+
+   // Frequency -> ODB
+   document.getElementById('Frequency').addEventListener('change', function() {
+      saveSetting('Frequency (GHz)', parseFloat(this.value));
+   });
+
+   // Trigger levels -> ODB
+   var levelKeys = ['TriggerLevel_CH0 (V)','TriggerLevel_CH1 (V)',
+                    'TriggerLevel_CH2 (V)','TriggerLevel_CH3 (V)'];
+   for (var ch = 0; ch < 4; ch++) {
+      (function(ch, key) {
+         document.getElementById('TriggerLevel_CH' + ch).addEventListener('change', function() {
+            saveSetting(key, parseFloat(this.value));
+         });
+      })(ch, levelKeys[ch]);
+   }
+
+   // EnableCH checkboxes -> ODB
+   for (var ch = 1; ch <= 4; ch++) {
+      (function(ch) {
+         document.getElementById('EnableCH' + ch).addEventListener('change', function() {
+            saveSetting('EnableCH' + ch, this.checked);
+         });
+      })(ch);
+   }
+
+   // Channel display visibility (no ODB, just controls drawing)
+   for (var ch = 1; ch <= 4; ch++) {
+      (function(ch) {
+         var el = document.getElementById('ShowCH' + ch);
+         el.addEventListener('change', function() {
+            showChannel[ch-1] = this.checked;
+            drawWaveform();
+         });
+      })(ch);
+   }
+
+   // Channel vertical position (range slider + number input, synced)
+   for (var ch = 1; ch <= 4; ch++) {
+      (function(ch) {
+         var slider = document.getElementById('PosCH' + ch);
+         var num = document.getElementById('PosValCH' + ch);
+
+         slider.addEventListener('input', function() {
+            posOffset[ch-1] = parseInt(this.value);
+            num.value = this.value;
+            saveDisplaySettings();
+            drawWaveform();
+         });
+         num.addEventListener('change', function() {
+            posOffset[ch-1] = parseInt(this.value) || 0;
+            slider.value = this.value;
+            saveDisplaySettings();
+            drawWaveform();
+         });
+      })(ch);
+   }
+
+   // Calibrate button
+   document.getElementById('calibrateBtn').addEventListener('click', startCalibration);
+
+   // Init mjsonrpc URL
+   if (typeof mjsonrpc_set_url === 'function') {
+      mjsonrpc_set_url(window.location.protocol + '//' + window.location.host);
+   }
+}
+
+// ---- Initialize on load ----
+window.addEventListener('load', function() {
+   // Diagnostic: check if mjsonrpc is available
+   document.getElementById('status').textContent = 'mjsonrpc=' + (typeof mjsonrpc_call) + ' board=' + selectedBoard;
+
+   setup();
+   loadSettings();
+   loadSnapshot();  // first snapshot (calls drawWaveform internally)
+
+   // Poll snapshot at ~10 Hz
+   setInterval(loadSnapshot, 200);
+
+   // Poll ODB settings every 2s
+   setInterval(loadSettings, 2000);
+});
+</script>
+</body>
+</html>
