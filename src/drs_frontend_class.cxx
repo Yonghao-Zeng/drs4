@@ -1139,27 +1139,6 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
       m_boards[i]->TransferWaves(0, 8);
       int trigger_cell = m_boards[i]->GetTriggerCell(0);
 
-      // Firmware v30000 may always report tc=0. Detect the true trigger
-      // position from waveform discontinuities: the largest inter-sample
-      // step marks where the circular buffer wraps (data starts fresh).
-      if (trigger_cell == 0) {
-         float wf[DRS4_NSAMPLES];
-         m_boards[i]->GetWave(0, 0, wf, false, 0);
-         float prev = wf[DRS4_NSAMPLES - 1];
-         float max_diff = 0;
-         int max_idx = 0;
-         for (int s = 0; s < DRS4_NSAMPLES; s++) {
-            float diff = fabsf(wf[s] - prev);
-            if (diff > max_diff) {
-               max_diff = diff;
-               max_idx = s;
-            }
-            prev = wf[s];
-         }
-         if (max_diff > 10.0f)  // require >10mV step to confirm real trigger
-            trigger_cell = max_idx;
-      }
-
       float freq = (float)m_boards[i]->GetTrueFrequency();
       bool vcal = m_boards[i]->IsVoltageCalibrationValid();
       bool tcal = m_boards[i]->IsTimingCalibrationValid();
