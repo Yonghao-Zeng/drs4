@@ -412,10 +412,17 @@ void DRS4Frontend::apply_board_config(int i)
       m_boards[i]->SetTriggerDelayNs(delay);
 
       // Individual trigger levels for channels 0-3
-      m_boards[i]->SetIndividualTriggerLevel(0, odb_get<double>(b, "TriggerLevel_CH0 (V)", 0.05));
-      m_boards[i]->SetIndividualTriggerLevel(1, odb_get<double>(b, "TriggerLevel_CH1 (V)", 0.05));
-      m_boards[i]->SetIndividualTriggerLevel(2, odb_get<double>(b, "TriggerLevel_CH2 (V)", 0.05));
-      m_boards[i]->SetIndividualTriggerLevel(3, odb_get<double>(b, "TriggerLevel_CH3 (V)", 0.05));
+      double trig_levels[4];
+      trig_levels[0] = odb_get<double>(b, "TriggerLevel_CH0 (V)", 0.05);
+      trig_levels[1] = odb_get<double>(b, "TriggerLevel_CH1 (V)", 0.05);
+      trig_levels[2] = odb_get<double>(b, "TriggerLevel_CH2 (V)", 0.05);
+      trig_levels[3] = odb_get<double>(b, "TriggerLevel_CH3 (V)", 0.05);
+      cm_msg(MINFO, "DRS4Frontend", "apply_board_config[%d]: trigger levels: CH0=%.3fV CH1=%.3fV CH2=%.3fV CH3=%.3fV",
+             i, trig_levels[0], trig_levels[1], trig_levels[2], trig_levels[3]);
+      m_boards[i]->SetIndividualTriggerLevel(0, trig_levels[0]);
+      m_boards[i]->SetIndividualTriggerLevel(1, trig_levels[1]);
+      m_boards[i]->SetIndividualTriggerLevel(2, trig_levels[2]);
+      m_boards[i]->SetIndividualTriggerLevel(3, trig_levels[3]);
 
       // Disable analog calibration (match official software init)
       m_boards[i]->EnableAcal(0, 0);
@@ -963,15 +970,13 @@ void DRS4Frontend::live_preview_loop()
          if (dt >= 1.0) {
             for (int i = 0; i < m_num_boards; i++) {
                if (!m_board_hw_connected[i]) continue;
+               // The scaler returns trigger rate * 10 (measurement clock is 10 Hz)
+               // So scaler=100 means 10 Hz trigger rate
                unsigned int scaler = m_boards[i]->GetScaler(0);
-               if (dt > 0) {
-                  double rate = (scaler - m_prev_trg_scaler[i]) / dt;
-                  if (rate < 0) rate = scaler / dt;
-                  char key[64];
-                  snprintf(key, sizeof(key), "TrgRate_B%d", i);
-                  try { m_settings[key] = (float)rate; } catch (...) {}
-               }
-               m_prev_trg_scaler[i] = scaler;
+               double rate = scaler / 10.0;  // Convert back to Hz
+               char key[64];
+               snprintf(key, sizeof(key), "TrgRate_B%d", i);
+               try { m_settings[key] = (float)rate; } catch (...) {}
             }
             m_prev_trg_time = now_s;
          }
@@ -1069,14 +1074,22 @@ void DRS4Frontend::live_preview_loop()
                   // trigger stops it (IsBusy→0).  We wait for that.
 
                   if (!m_in_end_of_run && !m_run_active) {
+                     int prev_busy = m_boards[master]->IsBusy();
                      m_boards[master]->StartDomino();
                      // Wait for hardware trigger to stop the sweep
                      int trig_timeout = 10000;
+                     int triggered = 0;
                      while (m_boards[master]->IsBusy()
                             && !m_in_end_of_run && !m_run_active) {
                         usleep(100);
                         if (--trig_timeout <= 0) break;
                      }
+                     triggered = !m_boards[master]->IsBusy();
+                     static int dbg_count = 0;
+                     if (dbg_count++ < 10 || triggered)
+                        cm_msg(MINFO, "DRS4Frontend",
+                               "Normal trigger: prev_busy=%d started=1 final_busy=%d triggered=%d timeout=%d",
+                               prev_busy, m_boards[master]->IsBusy(), triggered, trig_timeout <= 0);
                      if (!m_boards[master]->IsBusy())
                         capture_and_snapshot(false);
                   }
@@ -1137,7 +1150,7 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
       }
 
       m_boards[i]->TransferWaves(0, 8);
-      int trigger_cell = m_boards[i]->GetTriggerCell(0);
+      int trigger_cell = m_boards[i]->GetStopCell(0);
 
       float freq = (float)m_boards[i]->GetTrueFrequency();
       bool vcal = m_boards[i]->IsVoltageCalibrationValid();
@@ -1156,8 +1169,29 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
 
       for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
          int drs_ch = ch * 2;
-         m_boards[i]->GetTime(0, drs_ch, trigger_cell, m_snapshot_time[ch]);
-         m_boards[i]->GetWave(0, drs_ch, m_snapshot_wave[ch], true, trigger_cell);
+         m_boards[i]->GetTime(0, drs_ch, trigger_cell, m_snapshot_time[ch], true, true);
+         m_boards[i]->GetWave(0, drs_ch, m_snapshot_wave[ch], true, trigger_cell, -1, true, 0, false);
+      }
+
+      // Extrapolate first two and last two samples to reduce noise (same as official DRS software)
+      for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
+         m_snapshot_wave[ch][1] = 2 * m_snapshot_wave[ch][2] - m_snapshot_wave[ch][3];
+         m_snapshot_wave[ch][0] = 2 * m_snapshot_wave[ch][1] - m_snapshot_wave[ch][2];
+         m_snapshot_wave[ch][DRS4_NSAMPLES-2] = 2 * m_snapshot_wave[ch][DRS4_NSAMPLES-3] - m_snapshot_wave[ch][DRS4_NSAMPLES-4];
+         m_snapshot_wave[ch][DRS4_NSAMPLES-1] = 2 * m_snapshot_wave[ch][DRS4_NSAMPLES-2] - m_snapshot_wave[ch][DRS4_NSAMPLES-3];
+      }
+
+      // Apply baseline correction using median of center portion to be robust against signal content
+      // Median is less sensitive to outliers than mean
+      for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
+         std::vector<float> center_samples;
+         center_samples.reserve(600);
+         for (int s = 200; s < 800; s++)
+            center_samples.push_back(m_snapshot_wave[ch][s]);
+         std::sort(center_samples.begin(), center_samples.end());
+         float median = center_samples[300];  // median of 600 samples
+         for (int s = 0; s < DRS4_NSAMPLES; s++)
+            m_snapshot_wave[ch][s] -= median;
       }
 
       do_snapshot();
@@ -1202,7 +1236,7 @@ void DRS4Frontend::readout_loop()
          if (m_boards[i]->IsBusy()) continue;
 
          m_boards[i]->TransferWaves(0, 8);
-         int trigger_cell = m_boards[i]->GetTriggerCell(0);
+         int trigger_cell = m_boards[i]->GetStopCell(0);
 
          void *wp;
          INT rv = rb_get_wp(m_rb_handle, &wp, 1000);
@@ -1224,8 +1258,24 @@ void DRS4Frontend::readout_loop()
             float time_array[DRS4_NSAMPLES];
             float wave_array[DRS4_NSAMPLES];
 
-            m_boards[i]->GetTime(0, drs_ch, trigger_cell, time_array);
-            m_boards[i]->GetWave(0, drs_ch, wave_array, true, trigger_cell);
+            m_boards[i]->GetTime(0, drs_ch, trigger_cell, time_array, true, true);
+            m_boards[i]->GetWave(0, drs_ch, wave_array, true, trigger_cell, -1, true, 0, false);
+
+            // Extrapolate first two and last two samples to reduce noise
+            wave_array[1] = 2 * wave_array[2] - wave_array[3];
+            wave_array[0] = 2 * wave_array[1] - wave_array[2];
+            wave_array[DRS4_NSAMPLES-2] = 2 * wave_array[DRS4_NSAMPLES-3] - wave_array[DRS4_NSAMPLES-4];
+            wave_array[DRS4_NSAMPLES-1] = 2 * wave_array[DRS4_NSAMPLES-2] - wave_array[DRS4_NSAMPLES-3];
+
+            // Apply baseline correction using median of center portion (robust to signal content)
+            std::vector<float> center_samples;
+            center_samples.reserve(600);
+            for (int s = 200; s < 800; s++)
+               center_samples.push_back(wave_array[s]);
+            std::sort(center_samples.begin(), center_samples.end());
+            float median = center_samples[300];
+            for (int s = 0; s < DRS4_NSAMPLES; s++)
+               wave_array[s] -= median;
 
             char *pch = pbuf + header_size + ch * ch_data_size;
             uint32_t channel_id = (uint32_t)ch;
