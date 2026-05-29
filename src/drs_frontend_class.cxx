@@ -1164,29 +1164,10 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
          if (delay_ns < 0) delay_ns = 0;
       }
 
-      // The DRS4 evaluation board uses an LUT-based trigger delay.
-      // SetTriggerDelayNs converts ns to FPGA ticks (delay/6.2 for
-      // board type 9 fw>=17147).  Additionally there is a fixed
-      // propagation delay of ~(23.5 + 28.2/freq) ns through the
-      // comparator and FPGA, as accounted for by SetTriggerDelayPercent.
-      // We must include this offset when computing which ring buffer
-      // cell corresponds to the actual trigger edge.
-      double fixed_offset_ns = 23.5 + 28.2 / freq;
-      double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
-      int actual_delay_cells = (int)(actual_delay_ns * freq + 0.5);
-      actual_delay_cells = actual_delay_cells % DRS4_NSAMPLES;
-
-      // The trigger edge (signal crossing the threshold) is at cell
-      // (stop_cell - actual_delay_cells) % 1024 in the ring buffer.
-      // In FROM_STOP readout order, this corresponds to data index trig_idx.
-      int trig_idx = (DRS4_NSAMPLES - actual_delay_cells) % DRS4_NSAMPLES;
-
       if (snap_cnt++ < 5 || snap_cnt % 100 == 0)
          cm_msg(MINFO, "DRS4Frontend",
-                "Snapshot #%d: board=%d sc=%d freq=%.3f vcal=%d tcal=%d delay=%dns "
-                "fixed_offset=%.1fns actu_delay=%.1fns actu_cells=%d trig_idx=%d (auto=%d)",
-                snap_cnt, i, stop_cell, freq, vcal, tcal, delay_ns,
-                fixed_offset_ns, actual_delay_ns, actual_delay_cells, trig_idx, auto_mode);
+                "Snapshot #%d: board=%d sc=%d freq=%.3f vcal=%d tcal=%d delay=%dns (auto=%d)",
+                snap_cnt, i, stop_cell, freq, vcal, tcal, delay_ns, auto_mode);
 
       std::lock_guard<std::mutex> lock(m_snapshot_mutex);
       m_snapshot_freq = freq;
@@ -1218,18 +1199,12 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
 
       // Extrapolate first two samples to reduce readout ringing at cell 0
       // (matching official DRS4 software Osci.cpp:792-795).
-      // After chronological reordering, the first two samples are the
-      // oldest cells (near the stop+1 boundary), so the extrapolation
-      // affects the pre-trigger readout area only.
       for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
          m_snapshot_wave[ch][1] = 2 * m_snapshot_wave[ch][2] - m_snapshot_wave[ch][3];
          m_snapshot_wave[ch][0] = 2 * m_snapshot_wave[ch][1] - m_snapshot_wave[ch][2];
       }
 
-      // Build chronological time array (invariant [0, total_ns] regardless of delay).
-      // GetTime(rotated=true, tc=stop_cell) gives old_time[0]=0 at stop_cell
-      // increasing through the FROM_STOP order.  After reordering to chronological
-      // (oldest first), time goes from 0 to total_ns = ring period.
+      // Build chronological time array (invariant [0, total_ns]).
       {
          double total_ns = (double)DRS4_NSAMPLES / freq;
          for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
@@ -1243,9 +1218,12 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
             }
          }
 
-         // Trigger position in chronological order
-         int trig_chrono = (trig_idx == 0) ? (DRS4_NSAMPLES - 1) : (trig_idx - 1);
-         m_snapshot_trigger_cell = trig_chrono;
+         // The T marker is drawn at time = delay_ns on the invariant axis.
+         // Compute the array index closest to this time.
+         int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+         if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
+         if (trig_tc < 0) trig_tc = 0;
+         m_snapshot_trigger_cell = trig_tc;
       }
       do_snapshot();
    }
@@ -1299,12 +1277,6 @@ void DRS4Frontend::readout_loop()
             if (delay_ns < 0) delay_ns = 0;
          }
          float freq = (float)m_boards[i]->GetTrueFrequency();
-         // Account for fixed comparator/FPGA propagation delay
-         double fixed_offset_ns = 23.5 + 28.2 / freq;
-         double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
-         int actual_delay_cells = (int)(actual_delay_ns * freq + 0.5);
-         actual_delay_cells = actual_delay_cells % DRS4_NSAMPLES;
-         int trig_idx = (DRS4_NSAMPLES - actual_delay_cells) % DRS4_NSAMPLES;
 
          void *wp;
          INT rv = rb_get_wp(m_rb_handle, &wp, 1000);
@@ -1316,7 +1288,8 @@ void DRS4Frontend::readout_loop()
          uint32_t n_channels = DRS4_NCHANNELS;
 
          memcpy(pbuf, &board_id, 4);
-         memcpy(pbuf + 4, &trig_idx, 4);
+         // trigger_cell written below after chronological reordering
+         memset(pbuf + 4, 0, 4);
          memcpy(pbuf + 8, &n_channels, 4);
          memcpy(pbuf + 12, &freq, 4);
 
@@ -1348,9 +1321,14 @@ void DRS4Frontend::readout_loop()
                }
             }
 
-            // Store trigger position in chronological order
-            int trig_chrono = (trig_idx == 0) ? (DRS4_NSAMPLES - 1) : (trig_idx - 1);
-            memcpy(pbuf + 4, &trig_chrono, 4);
+            // Store trigger position: display index closest to delay_ns
+            {
+               double total_ns = (double)DRS4_NSAMPLES / freq;
+               int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+               if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
+               if (trig_tc < 0) trig_tc = 0;
+               memcpy(pbuf + 4, &trig_tc, 4);
+            }
 
             // Extrapolate first two samples to reduce readout ringing
             // (matching official DRS4 software Osci.cpp:792-795)

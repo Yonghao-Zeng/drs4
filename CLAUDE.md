@@ -93,15 +93,18 @@ before display.
 trigger edge appears at its natural chronological position (≈ total_ns −
 actual_delay_time).
 
-**Trigger delay fixed offset**: The DRS4 eval board has ~29ns fixed
-comparator/FPGA propagation delay:
-`actual_delay_ns = delay_ns + 23.5 + 28.2/freq_GHz`
-`SetTriggerDelayPercent` accounts for this but `SetTriggerDelayNs` does not.
-The trigger cell position computation must include this offset.
+**Trigger T marker**: The T marker is drawn at position `delay_ns` on the
+invariant time axis (regardless of the actual trigger cell in hardware).
+The user adjusts the delay to align the T marker with the desired signal
+feature — analogous to an oscilloscope's trigger position control.
 
-**Trigger cell (snapshot)**: `m_snapshot_trigger_cell` stores the chronological
-index of the trigger edge.  The web UI looks up `time[trigger_cell]` to
-position the T marker.
+**Hardware note**: The DRS4 evaluation board has a minimum ~29ns fixed
+comparator/FPGA propagation delay (`23.5 + 28.2/freq` in
+`SetTriggerDelayPercent`).  `SetTriggerDelayNs` converts ns→FPGA ticks
+(delay/6.2 for board type 9, fw>=17147) without adding this offset, so
+the actual trigger-to-stop time is `delay_ns + ~29ns`. This means the
+signal edge will be ~29ns later in the waveform than the T marker
+position; the user compensates by reducing the delay setting slightly.
 
 **Web UI time axis**: `timeToX` centers t=0 at the screen center:
 `return gridLeft + ((t + screenNs / 2) / screenNs) * screenWidth`.
@@ -118,3 +121,4 @@ position the T marker.
 | Baseline correction | none | none (same) |
 | Display order | FROM_STOP raw | chronological reordered |
 | Time axis | FROM_STOP order [0, total] | chronological [0, total] |
+| T marker position | GetTriggerCell (= stop cell) | delay_ns on time axis |
