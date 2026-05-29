@@ -209,7 +209,7 @@ var ctx = document.getElementById('scope').getContext('2d');
 var colors = ['#00cc00', '#ff0000', '#cc9900', '#0099cc'];
 
 // Display parameters
-var timeDiv = 10;      // ns per horizontal division
+var timeDiv = 25;      // ns per horizontal division
 var voltDiv = 100;     // mV per vertical division
 var posOffset = [0, 0, 0, 0];  // vertical position offset per channel (mV)
 var showChannel = [true, true, true, true];  // visibility per channel
@@ -250,7 +250,7 @@ function voltToY(v, chOffset) {
 function timeToX(t) {
    var screenWidth = canvasWidth - gridLeft - gridRight;
    var screenNs = timeDiv * 10;  // 10 horizontal divisions
-   return gridLeft + (t / screenNs) * screenWidth;
+   return gridLeft + ((t + screenNs / 2) / screenNs) * screenWidth;
 }
 
 // ---- Drawing ----
@@ -371,11 +371,9 @@ function drawWaveform() {
 
    // Trigger delay indicator: vertical dashed line at trigger position
    if (snapshot && snapshot.trigger_cell !== undefined) {
-      var delayNs = parseInt(document.getElementById('TriggerDelay') && document.getElementById('TriggerDelay').value) || 0;
       var tc = snapshot.trigger_cell;
-      var freq = snapshot.freq || 5.0;
-      var sampleNs = 1.0 / freq;  // ns per sample
-      var trigTime = tc * sampleNs;  // trigger fires at this time
+      var time = snapshot.channels[0].time;
+      var trigTime = (tc >= 0 && tc < time.length) ? time[tc] : 0;
       var xTrig = timeToX(trigTime);
       if (xTrig >= gridLeft && xTrig <= gridLeft + sw) {
          ctx.strokeStyle = '#ff6600';

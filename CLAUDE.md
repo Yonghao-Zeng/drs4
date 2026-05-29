@@ -66,3 +66,55 @@ make
 - **TriggerMode "Normal"** = triggered single sweep (DominoMode=0, waits for hardware trigger)
 - Transparent mode (`TranspMode=true`) required for analog trigger
 - Channel indexing: physical CH1-4 maps to DRS chip channels 0, 2, 4, 6 (even channels)
+
+### Critical: Readout Mode, Calibration, and Time Axis
+
+**ReadoutMode must be `FROM_STOP`** (ODB default). The DRS4 calibration system
+(cellDT per-cell timing, fCellOffset2 secondary offset calibration) is designed
+for FROM_STOP readout.  `FROM_FIRST_BIN` produces misaligned time/waveform
+arrays that cause signal jumping.
+
+**GetWave parameters** (matching official DRS4 software `Osci.cpp:769`):
+- `adjustToClock=false` — waveform in raw readout order (no rotation)
+- `offsetCalib=true` — enables secondary per-cell offset correction
+  (`fCellOffset2`), eliminating cell-to-cell pattern noise
+
+**GetTime parameters**:
+- `rotated=true` — time array aligned with FROM_STOP readout order
+- `tcalibrated=true` — use per-cell timing calibration
+- `tc=stop_cell` — for DRS4, GetTriggerCell returns GetStopCell
+
+**Chronological reordering**: FROM_STOP readout order is
+`[stop, stop+1, ..., stop-1]` which is `[newest, oldest, ..., second-newest]`.
+Samples are reordered into chronological order (oldest→newest, left→right)
+before display.
+
+**Time axis**: Invariant `[0, total_ns]` regardless of trigger delay.  The
+trigger edge appears at its natural chronological position (≈ total_ns −
+actual_delay_time).
+
+**Trigger delay fixed offset**: The DRS4 eval board has ~29ns fixed
+comparator/FPGA propagation delay:
+`actual_delay_ns = delay_ns + 23.5 + 28.2/freq_GHz`
+`SetTriggerDelayPercent` accounts for this but `SetTriggerDelayNs` does not.
+The trigger cell position computation must include this offset.
+
+**Trigger cell (snapshot)**: `m_snapshot_trigger_cell` stores the chronological
+index of the trigger edge.  The web UI looks up `time[trigger_cell]` to
+position the T marker.
+
+**Web UI time axis**: `timeToX` centers t=0 at the screen center:
+`return gridLeft + ((t + screenNs / 2) / screenNs) * screenWidth`.
+
+### DRS4 API Differences vs Official Software
+
+| Aspect | Official (`drsosc`) | This frontend |
+|--------|-------------------|---------------|
+| Readout | FROM_STOP | FROM_STOP (same) |
+| GetWave adjustToClock | `!m_rotated` = false | false (same) |
+| GetWave offsetCalib | `m_calibrated2` = true | true (same) |
+| GetTime rotated | `m_rotated` = true | true (same) |
+| Extrapolation | first 2 samples | first 2 samples (same) |
+| Baseline correction | none | none (same) |
+| Display order | FROM_STOP raw | chronological reordered |
+| Time axis | FROM_STOP order [0, total] | chronological [0, total] |

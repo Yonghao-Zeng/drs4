@@ -78,7 +78,7 @@ void DRS4Frontend::create_board_defaults(int board_index)
       {"TriggerDelayNs",    0},
       {"DominoActive",      std::string("AlwaysRunning")},
       {"Options DominoActive", std::array<std::string, 2>{"AlwaysRunning", "StopOnReadout"}},
-      {"ReadoutMode",       std::string("FROM_FIRST_BIN")},
+      {"ReadoutMode",       std::string("FROM_STOP")},
       {"Options ReadoutMode", std::array<std::string, 2>{"FROM_FIRST_BIN", "FROM_STOP"}},
       {"TranspMode",        true},
       {"EnableTcal",        false},
@@ -1150,50 +1150,103 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
       }
 
       m_boards[i]->TransferWaves(0, 8);
-      int trigger_cell = m_boards[i]->GetStopCell(0);
+      int stop_cell = m_boards[i]->GetStopCell(0);
 
       float freq = (float)m_boards[i]->GetTrueFrequency();
       bool vcal = m_boards[i]->IsVoltageCalibrationValid();
       bool tcal = m_boards[i]->IsTimingCalibrationValid();
-      int fw_ver = m_boards[i]->GetFirmwareVersion();
+
+      // Get trigger delay setting from ODB
+      int delay_ns = 0;
+      {
+         midas::odb b(m_settings_path + "/Boards/Board" + std::to_string(i));
+         delay_ns = odb_get<int>(b, "TriggerDelayNs", 0);
+         if (delay_ns < 0) delay_ns = 0;
+      }
+
+      // The DRS4 evaluation board uses an LUT-based trigger delay.
+      // SetTriggerDelayNs converts ns to FPGA ticks (delay/6.2 for
+      // board type 9 fw>=17147).  Additionally there is a fixed
+      // propagation delay of ~(23.5 + 28.2/freq) ns through the
+      // comparator and FPGA, as accounted for by SetTriggerDelayPercent.
+      // We must include this offset when computing which ring buffer
+      // cell corresponds to the actual trigger edge.
+      double fixed_offset_ns = 23.5 + 28.2 / freq;
+      double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
+      int actual_delay_cells = (int)(actual_delay_ns * freq + 0.5);
+      actual_delay_cells = actual_delay_cells % DRS4_NSAMPLES;
+
+      // The trigger edge (signal crossing the threshold) is at cell
+      // (stop_cell - actual_delay_cells) % 1024 in the ring buffer.
+      // In FROM_STOP readout order, this corresponds to data index trig_idx.
+      int trig_idx = (DRS4_NSAMPLES - actual_delay_cells) % DRS4_NSAMPLES;
 
       if (snap_cnt++ < 5 || snap_cnt % 100 == 0)
          cm_msg(MINFO, "DRS4Frontend",
-                "Snapshot #%d: board=%d tc=%d fw=%d freq=%.3f vcal=%d tcal=%d (auto=%d)",
-                snap_cnt, i, trigger_cell, fw_ver, freq, vcal, tcal, auto_mode);
+                "Snapshot #%d: board=%d sc=%d freq=%.3f vcal=%d tcal=%d delay=%dns "
+                "fixed_offset=%.1fns actu_delay=%.1fns actu_cells=%d trig_idx=%d (auto=%d)",
+                snap_cnt, i, stop_cell, freq, vcal, tcal, delay_ns,
+                fixed_offset_ns, actual_delay_ns, actual_delay_cells, trig_idx, auto_mode);
 
       std::lock_guard<std::mutex> lock(m_snapshot_mutex);
-      m_snapshot_trigger_cell = trigger_cell;
       m_snapshot_freq = freq;
       m_snapshot_board = i;
 
+      // Get calibrated waveform and time from DRS board.
+      // Use FROM_STOP-consistent parameters (matching official DRS4 software):
+      //   GetWave:  adjustToClock=false, offsetCalib=true
+      //   GetTime:  rotated=true, tcalibrated=true
       for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
          int drs_ch = ch * 2;
-         m_boards[i]->GetTime(0, drs_ch, trigger_cell, m_snapshot_time[ch], true, true);
-         m_boards[i]->GetWave(0, drs_ch, m_snapshot_wave[ch], true, trigger_cell, -1, true, 0, false);
+         m_boards[i]->GetTime(0, drs_ch, stop_cell, m_snapshot_time[ch], true, true);
+         m_boards[i]->GetWave(0, drs_ch, m_snapshot_wave[ch], true, stop_cell, -1, false, 0, true);
       }
 
-      // Extrapolate first two and last two samples to reduce noise (same as official DRS software)
+      // Reorder waveform from FROM_STOP readout order into chronological
+      // order (oldest sample at index 0, newest / stop cell at index 1023).
+      // FROM_STOP order: [stop, stop+1, ..., 1023, 0, ..., stop-1]
+      // Chronological order: [stop+1, stop+2, ..., 1023, 0, ..., stop-1, stop]
+      // Reorder mapping: chrono[i] = data[(i+1) % 1024]
+      {
+         float tmp_wave[DRS4_NSAMPLES];
+         for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
+            memcpy(tmp_wave, m_snapshot_wave[ch], sizeof(tmp_wave));
+            for (int i = 0; i < DRS4_NSAMPLES; i++)
+               m_snapshot_wave[ch][i] = tmp_wave[(i + 1) % DRS4_NSAMPLES];
+         }
+      }
+
+      // Extrapolate first two samples to reduce readout ringing at cell 0
+      // (matching official DRS4 software Osci.cpp:792-795).
+      // After chronological reordering, the first two samples are the
+      // oldest cells (near the stop+1 boundary), so the extrapolation
+      // affects the pre-trigger readout area only.
       for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
          m_snapshot_wave[ch][1] = 2 * m_snapshot_wave[ch][2] - m_snapshot_wave[ch][3];
          m_snapshot_wave[ch][0] = 2 * m_snapshot_wave[ch][1] - m_snapshot_wave[ch][2];
-         m_snapshot_wave[ch][DRS4_NSAMPLES-2] = 2 * m_snapshot_wave[ch][DRS4_NSAMPLES-3] - m_snapshot_wave[ch][DRS4_NSAMPLES-4];
-         m_snapshot_wave[ch][DRS4_NSAMPLES-1] = 2 * m_snapshot_wave[ch][DRS4_NSAMPLES-2] - m_snapshot_wave[ch][DRS4_NSAMPLES-3];
       }
 
-      // Apply baseline correction using median of center portion to be robust against signal content
-      // Median is less sensitive to outliers than mean
-      for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
-         std::vector<float> center_samples;
-         center_samples.reserve(600);
-         for (int s = 200; s < 800; s++)
-            center_samples.push_back(m_snapshot_wave[ch][s]);
-         std::sort(center_samples.begin(), center_samples.end());
-         float median = center_samples[300];  // median of 600 samples
-         for (int s = 0; s < DRS4_NSAMPLES; s++)
-            m_snapshot_wave[ch][s] -= median;
-      }
+      // Build chronological time array (invariant [0, total_ns] regardless of delay).
+      // GetTime(rotated=true, tc=stop_cell) gives old_time[0]=0 at stop_cell
+      // increasing through the FROM_STOP order.  After reordering to chronological
+      // (oldest first), time goes from 0 to total_ns = ring period.
+      {
+         double total_ns = (double)DRS4_NSAMPLES / freq;
+         for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
+            float tmp[DRS4_NSAMPLES];
+            memcpy(tmp, m_snapshot_time[ch], sizeof(tmp));
+            for (int i = 0; i < DRS4_NSAMPLES; i++) {
+               if (i < DRS4_NSAMPLES - 1)
+                  m_snapshot_time[ch][i] = tmp[(i + 1) % DRS4_NSAMPLES] - tmp[1];
+               else
+                  m_snapshot_time[ch][i] = (float)total_ns;
+            }
+         }
 
+         // Trigger position in chronological order
+         int trig_chrono = (trig_idx == 0) ? (DRS4_NSAMPLES - 1) : (trig_idx - 1);
+         m_snapshot_trigger_cell = trig_chrono;
+      }
       do_snapshot();
    }
 }
@@ -1236,7 +1289,22 @@ void DRS4Frontend::readout_loop()
          if (m_boards[i]->IsBusy()) continue;
 
          m_boards[i]->TransferWaves(0, 8);
-         int trigger_cell = m_boards[i]->GetStopCell(0);
+         int stop_cell = m_boards[i]->GetStopCell(0);
+
+         // Get trigger delay setting
+         int delay_ns = 0;
+         {
+            midas::odb b(m_settings_path + "/Boards/Board" + std::to_string(i));
+            delay_ns = odb_get<int>(b, "TriggerDelayNs", 0);
+            if (delay_ns < 0) delay_ns = 0;
+         }
+         float freq = (float)m_boards[i]->GetTrueFrequency();
+         // Account for fixed comparator/FPGA propagation delay
+         double fixed_offset_ns = 23.5 + 28.2 / freq;
+         double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
+         int actual_delay_cells = (int)(actual_delay_ns * freq + 0.5);
+         actual_delay_cells = actual_delay_cells % DRS4_NSAMPLES;
+         int trig_idx = (DRS4_NSAMPLES - actual_delay_cells) % DRS4_NSAMPLES;
 
          void *wp;
          INT rv = rb_get_wp(m_rb_handle, &wp, 1000);
@@ -1246,10 +1314,9 @@ void DRS4Frontend::readout_loop()
 
          uint32_t board_id = (uint32_t)i;
          uint32_t n_channels = DRS4_NCHANNELS;
-         float freq = (float)m_boards[i]->GetTrueFrequency();
 
          memcpy(pbuf, &board_id, 4);
-         memcpy(pbuf + 4, &trigger_cell, 4);
+         memcpy(pbuf + 4, &trig_idx, 4);
          memcpy(pbuf + 8, &n_channels, 4);
          memcpy(pbuf + 12, &freq, 4);
 
@@ -1258,24 +1325,37 @@ void DRS4Frontend::readout_loop()
             float time_array[DRS4_NSAMPLES];
             float wave_array[DRS4_NSAMPLES];
 
-            m_boards[i]->GetTime(0, drs_ch, trigger_cell, time_array, true, true);
-            m_boards[i]->GetWave(0, drs_ch, wave_array, true, trigger_cell, -1, true, 0, false);
+            // Match official DRS4 software: FROM_STOP readout,
+            // adjustToClock=false, offsetCalib=true, rotated=true
+            m_boards[i]->GetTime(0, drs_ch, stop_cell, time_array, true, true);
+            m_boards[i]->GetWave(0, drs_ch, wave_array, true, stop_cell, -1, false, 0, true);
 
-            // Extrapolate first two and last two samples to reduce noise
+            // Reorder FROM_STOP data into chronological order (oldest first)
+            // and build invariant time axis [0, total_ns].
+            {
+               float tmp[DRS4_NSAMPLES];
+               float t_tmp[DRS4_NSAMPLES];
+               memcpy(tmp, wave_array, sizeof(tmp));
+               memcpy(t_tmp, time_array, sizeof(t_tmp));
+               double total_ns = (double)DRS4_NSAMPLES / freq;
+               for (int s = 0; s < DRS4_NSAMPLES; s++) {
+                  int src = (s + 1) % DRS4_NSAMPLES;
+                  wave_array[s] = tmp[src];
+                  if (s < DRS4_NSAMPLES - 1)
+                     time_array[s] = t_tmp[src] - t_tmp[1];
+                  else
+                     time_array[s] = (float)total_ns;
+               }
+            }
+
+            // Store trigger position in chronological order
+            int trig_chrono = (trig_idx == 0) ? (DRS4_NSAMPLES - 1) : (trig_idx - 1);
+            memcpy(pbuf + 4, &trig_chrono, 4);
+
+            // Extrapolate first two samples to reduce readout ringing
+            // (matching official DRS4 software Osci.cpp:792-795)
             wave_array[1] = 2 * wave_array[2] - wave_array[3];
             wave_array[0] = 2 * wave_array[1] - wave_array[2];
-            wave_array[DRS4_NSAMPLES-2] = 2 * wave_array[DRS4_NSAMPLES-3] - wave_array[DRS4_NSAMPLES-4];
-            wave_array[DRS4_NSAMPLES-1] = 2 * wave_array[DRS4_NSAMPLES-2] - wave_array[DRS4_NSAMPLES-3];
-
-            // Apply baseline correction using median of center portion (robust to signal content)
-            std::vector<float> center_samples;
-            center_samples.reserve(600);
-            for (int s = 200; s < 800; s++)
-               center_samples.push_back(wave_array[s]);
-            std::sort(center_samples.begin(), center_samples.end());
-            float median = center_samples[300];
-            for (int s = 0; s < DRS4_NSAMPLES; s++)
-               wave_array[s] -= median;
 
             char *pch = pbuf + header_size + ch * ch_data_size;
             uint32_t channel_id = (uint32_t)ch;
