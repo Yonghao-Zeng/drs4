@@ -250,7 +250,7 @@ function voltToY(v, chOffset) {
 function timeToX(t) {
    var screenWidth = canvasWidth - gridLeft - gridRight;
    var screenNs = timeDiv * 10;  // 10 horizontal divisions
-   return gridLeft + ((t + screenNs / 2) / screenNs) * screenWidth;
+   return gridLeft + (t / screenNs) * screenWidth;
 }
 
 // ---- Drawing ----
@@ -281,7 +281,7 @@ function drawGrid() {
    ctx.font = '10px Arial';
    ctx.textAlign = 'center';
    for (var i = 0; i <= 10; i++) {
-      var t = (i - 5) * timeDiv;
+      var t = i * timeDiv;
       var x = gridLeft + (i / 10) * sw;
       var label;
       if (Math.abs(t) >= 1000) label = (t/1000).toFixed(1) + ' us';
