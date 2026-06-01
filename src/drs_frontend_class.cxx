@@ -1218,9 +1218,13 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
             }
          }
 
-         // The T marker is drawn at time = delay_ns on the invariant axis.
-         // Compute the array index closest to this time.
-         int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+         // The T marker is drawn at the actual trigger edge position.
+         // The DRS4 eval board has a fixed ~29ns comparator/FPGA delay
+         // (23.5 + 28.2/freq) on top of the programmable LUT delay, so
+         // the total trigger-to-stop time = delay_ns + 23.5 + 28.2/freq.
+         double fixed_offset_ns = 23.5 + 28.2 / freq;
+         double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
+         int trig_tc = (int)(actual_delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
          if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
          if (trig_tc < 0) trig_tc = 0;
          m_snapshot_trigger_cell = trig_tc;
@@ -1321,10 +1325,13 @@ void DRS4Frontend::readout_loop()
                }
             }
 
-            // Store trigger position: display index closest to delay_ns
+            // Store trigger position: display index at actual trigger edge.
+            // Includes the fixed ~29ns comparator/FPGA delay.
             {
                double total_ns = (double)DRS4_NSAMPLES / freq;
-               int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+               double fixed_offset_ns = 23.5 + 28.2 / freq;
+               double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
+               int trig_tc = (int)(actual_delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
                if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
                if (trig_tc < 0) trig_tc = 0;
                memcpy(pbuf + 4, &trig_tc, 4);

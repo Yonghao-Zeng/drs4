@@ -369,23 +369,15 @@ function drawWaveform() {
       ctx.fillText('CH' + (ch+1), gridLeft + 4, labelY + 4);
    }
 
-   // Trigger delay indicator: vertical dashed line at trigger position
+   // Trigger delay indicator: "T" marker at trigger position
    if (snapshot && snapshot.trigger_cell !== undefined) {
       var tc = snapshot.trigger_cell;
       var time = snapshot.channels[0].time;
       var trigTime = (tc >= 0 && tc < time.length) ? time[tc] : 0;
       var xTrig = timeToX(trigTime);
       if (xTrig >= gridLeft && xTrig <= gridLeft + sw) {
-         ctx.strokeStyle = '#ff6600';
-         ctx.lineWidth = 1.5;
-         ctx.setLineDash([6, 4]);
-         ctx.beginPath();
-         ctx.moveTo(xTrig, gridTop);
-         ctx.lineTo(xTrig, gridTop + sh);
-         ctx.stroke();
-         ctx.setLineDash([]);
          ctx.fillStyle = '#ff6600';
-         ctx.font = '10px Arial';
+         ctx.font = 'bold 11px Arial';
          ctx.textAlign = 'center';
          ctx.fillText('T', xTrig, gridTop + 12);
       }
