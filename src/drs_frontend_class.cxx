@@ -407,9 +407,22 @@ void DRS4Frontend::apply_board_config(int i)
       // SetFrequency so the config register gets the right domino mode.
       m_boards[i]->SetDominoMode(1);
 
-      // Trigger delay (ns)
-      int delay = odb_get<int>(b, "TriggerDelayNs", 0);
-      m_boards[i]->SetTriggerDelayNs(delay);
+      // Trigger delay (ns) — UI value is the T marker position on the
+      // time axis (oscilloscope model). Convert to the hardware LUT
+      // delay: true_delay = (total_ns - fixed_29ns) - user_delay, so
+      // UI=0 maps to true_delay ≈ 171 ns (T at left edge) and
+      // UI=171 maps to true_delay = 0 (T at right edge). This makes the
+      // T marker and the actual signal rising edge sit at user_delay on
+      // the time axis regardless of the hardware's fixed comparator
+      // delay.
+      int user_delay = odb_get<int>(b, "TriggerDelayNs", 0);
+      if (user_delay < 0) user_delay = 0;
+      double total_ns = (double)DRS4_NSAMPLES / freq;
+      double fixed_offset_ns = 23.5 + 28.2 / freq;
+      int true_delay = (int)((total_ns - fixed_offset_ns) - user_delay + 0.5);
+      if (true_delay < 0) true_delay = 0;
+      if (true_delay > 255 * 6) true_delay = 255 * 6;  // 255 ticks * ~6.2ns
+      m_boards[i]->SetTriggerDelayNs(true_delay);
 
       // Individual trigger levels for channels 0-3
       double trig_levels[4];
@@ -1218,13 +1231,13 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
             }
          }
 
-         // The T marker is drawn at the actual trigger edge position.
-         // The DRS4 eval board has a fixed ~29ns comparator/FPGA delay
-         // (23.5 + 28.2/freq) on top of the programmable LUT delay, so
-         // the total trigger-to-stop time = delay_ns + 23.5 + 28.2/freq.
-         double fixed_offset_ns = 23.5 + 28.2 / freq;
-         double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
-         int trig_tc = (int)(actual_delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+         // T marker is drawn at the user-set TriggerDelayNs position on
+         // the time axis (oscilloscope model). The hardware's trigger
+         // cell sits at the same position because apply_board_config
+         // converts user_delay to true_delay as
+         //     true_delay = (total_ns - fixed_29ns) - user_delay
+         // so the actual signal rising edge is always at user_delay.
+         int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
          if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
          if (trig_tc < 0) trig_tc = 0;
          m_snapshot_trigger_cell = trig_tc;
@@ -1325,13 +1338,14 @@ void DRS4Frontend::readout_loop()
                }
             }
 
-            // Store trigger position: display index at actual trigger edge.
-            // Includes the fixed ~29ns comparator/FPGA delay.
+            // Store trigger position: index on the time axis corresponding
+            // to the user-set TriggerDelayNs. The actual signal rising
+            // edge sits at the same position because apply_board_config
+            // converts user_delay to true_delay as
+            //     true_delay = (total_ns - fixed_29ns) - user_delay
             {
                double total_ns = (double)DRS4_NSAMPLES / freq;
-               double fixed_offset_ns = 23.5 + 28.2 / freq;
-               double actual_delay_ns = (double)delay_ns + fixed_offset_ns;
-               int trig_tc = (int)(actual_delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+               int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
                if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
                if (trig_tc < 0) trig_tc = 0;
                memcpy(pbuf + 4, &trig_tc, 4);

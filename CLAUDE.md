@@ -89,25 +89,32 @@ arrays that cause signal jumping.
 Samples are reordered into chronological order (oldest→newest, left→right)
 before display.
 
-**Time axis**: Invariant `[0, total_ns]` regardless of trigger delay.  The
-trigger edge appears at its natural chronological position (≈ total_ns −
-actual_delay_time).
+**Time axis**: Invariant `[0, total_ns]` regardless of trigger delay.
+Left-aligned: `t=0` at the left edge of the screen, `t=total_ns` at the
+right.
 
-**Trigger T marker**: The T marker is drawn at position `delay_ns` on the
-invariant time axis (regardless of the actual trigger cell in hardware).
-The user adjusts the delay to align the T marker with the desired signal
-feature — analogous to an oscilloscope's trigger position control.
+**TriggerDelayNs (UI semantics)**: The ODB value is the **T marker
+position on the time axis** (oscilloscope model), not the raw DRS4 LUT
+delay. For UI value 0 the T marker sits at the left edge of the screen
+(time 0); for UI value 100 the T marker sits at time 100 ns; the
+maximum UI value is `total_ns − 29ns` (≈171 ns at 5.12 GHz).
+
+The actual hardware LUT delay sent to the DRS4 is the inverse:
+`true_delay = (total_ns − 29ns) − user_delay`. This way, the trigger
+cell (and the actual signal rising edge it captures) sits at
+`user_delay` on the time axis — so the T marker always lands on the
+rising edge of the captured signal.
 
 **Hardware note**: The DRS4 evaluation board has a minimum ~29ns fixed
 comparator/FPGA propagation delay (`23.5 + 28.2/freq` in
-`SetTriggerDelayPercent`).  `SetTriggerDelayNs` converts ns→FPGA ticks
-(delay/6.2 for board type 9, fw>=17147) without adding this offset, so
-the actual trigger-to-stop time is `delay_ns + ~29ns`. This means the
-signal edge will be ~29ns later in the waveform than the T marker
-position; the user compensates by reducing the delay setting slightly.
+`SetTriggerDelayPercent`). The hardware's trigger cell sits at
+`total_ns − (true_delay + 29ns)`. With the UI mapping above,
+`true_delay + 29ns = total_ns − user_delay`, so the trigger cell sits
+at `user_delay` on the time axis — exactly where the T marker is drawn.
 
-**Web UI time axis**: `timeToX` centers t=0 at the screen center:
-`return gridLeft + ((t + screenNs / 2) / screenNs) * screenWidth`.
+**Web UI time axis**: `timeToX` maps `t=0` to the left edge of the
+screen (left-aligned, positive-only):
+`return gridLeft + (t / screenNs) * screenWidth`.
 
 ### DRS4 API Differences vs Official Software
 
@@ -121,4 +128,4 @@ position; the user compensates by reducing the delay setting slightly.
 | Baseline correction | none | none (same) |
 | Display order | FROM_STOP raw | chronological reordered |
 | Time axis | FROM_STOP order [0, total] | chronological [0, total] |
-| T marker position | GetTriggerCell (= stop cell) | delay_ns on time axis |
+| T marker position | GetTriggerCell (= stop cell) | user_delay on time axis (UI value = T position) |

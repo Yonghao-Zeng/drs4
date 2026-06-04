@@ -62,7 +62,7 @@ private:
    std::atomic<bool> m_snapshot_wanted{false};
    float m_snapshot_time[DRS4_NCHANNELS][DRS4_NSAMPLES]{};
    float m_snapshot_wave[DRS4_NCHANNELS][DRS4_NSAMPLES]{};
-   int m_snapshot_trigger_cell{0};
+   int m_snapshot_trigger_cell{0};   // time-axis index of T marker (= user_delay * 1024 / total_ns)
    float m_snapshot_freq{0};
    int m_snapshot_board{0};
 
