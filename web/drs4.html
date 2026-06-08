@@ -91,8 +91,8 @@
          </select>
       </div>
       <div class="control-group">
-         <label>Frequency:</label>
-         <select id="Frequency">
+         <label>Sampling Rate:</label>
+         <select id="SamplingRate">
             <option value="5.0">5 GHz</option>
             <option value="2.5">2.5 GHz</option>
             <option value="1.0">1 GHz</option>
@@ -188,7 +188,12 @@
          <div class="info-item"><div class="lbl">Time Range</div><div class="val" id="trange">-</div></div>
          <div class="info-item"><div class="lbl">Trigger Cell</div><div class="val" id="tc">-</div></div>
          <div class="info-item"><div class="lbl">Triggered</div><div class="val" id="trig">-</div></div>
-         <div class="info-item"><div class="lbl">Trigger Rate</div><div class="val" id="rate">-</div></div>
+         <div class="info-item"><div class="lbl">Acq/s</div><div class="val" id="rate_acq">-</div></div>
+         <div class="info-item"><div class="lbl">CH1 Trig</div><div class="val" id="rate_ch1">-</div></div>
+         <div class="info-item"><div class="lbl">CH2 Trig</div><div class="val" id="rate_ch2">-</div></div>
+         <div class="info-item"><div class="lbl">CH3 Trig</div><div class="val" id="rate_ch3">-</div></div>
+         <div class="info-item"><div class="lbl">CH4 Trig</div><div class="val" id="rate_ch4">-</div></div>
+         <div class="info-item"><div class="lbl">Global Trig</div><div class="val" id="rate_global">-</div></div>
          <div class="info-item"><div class="lbl">Last Update</div><div class="val" id="time">-</div></div>
       </div>
       <div class="info-row">
@@ -229,7 +234,7 @@ var _currentOdbValues = {};
 
 // ODB settings keys
 var SETTINGS_KEYS = [
-   'TriggerMode', 'TriggerLogic', 'Frequency (GHz)',
+   'TriggerMode', 'TriggerLogic', 'Sampling Rate (GHz)',
    'TriggerLevel_CH0 (V)', 'TriggerLevel_CH1 (V)',
    'TriggerLevel_CH2 (V)', 'TriggerLevel_CH3 (V)',
    'TriggerDelayNs',
@@ -419,12 +424,28 @@ function loadSnapshot() {
    };
    xhr.send();
 
-   // Trigger rate from ODB
+   // Trigger rates from ODB (per-channel + global hardware trigger + Acq/s)
    if (typeof mjsonrpc_call === 'function') {
-      mjsonrpc_call('db_get_values', { paths: ['/Equipment/DRS4/Settings/TrgRate_B0'] }).then(function(rpc) {
+      var paths = [
+         '/Equipment/DRS4/Settings/TrgRate_B0_Acq',
+         '/Equipment/DRS4/Settings/TrgRate_B0_CH1',
+         '/Equipment/DRS4/Settings/TrgRate_B0_CH2',
+         '/Equipment/DRS4/Settings/TrgRate_B0_CH3',
+         '/Equipment/DRS4/Settings/TrgRate_B0_CH4',
+         '/Equipment/DRS4/Settings/TrgRate_B0'
+      ];
+      mjsonrpc_call('db_get_values', { paths: paths }).then(function(rpc) {
          try {
-            var rate = Number(rpc.result.data[0]) || 0;
-            document.getElementById('rate').textContent = rate.toFixed(1) + ' Hz';
+            var fmt = function(hz) {
+               if (hz < 1000) return hz.toFixed(1) + ' Hz';
+               if (hz < 1000000) return (hz/1000).toFixed(2) + ' kHz';
+               return (hz/1000000).toFixed(2) + ' MHz';
+            };
+            var ids = ['rate_acq','rate_ch1','rate_ch2','rate_ch3','rate_ch4','rate_global'];
+            for (var k = 0; k < 6; k++) {
+               var v = Number(rpc.result.data[k]) || 0;
+               document.getElementById(ids[k]).textContent = fmt(v);
+            }
          } catch(e) {}
       }).catch(function() {});
    }
@@ -465,7 +486,7 @@ function loadSettings() {
 
          document.getElementById('TriggerMode').value = (v[0] === 'Normal') ? 'Normal' : 'Auto';
          document.getElementById('TriggerLogic').value = (v[1] === 'AND') ? 'AND' : 'OR';
-         document.getElementById('Frequency').value = String(v[2] || 5.0);
+         document.getElementById('SamplingRate').value = String(v[2] || 5.0);
          document.getElementById('TriggerLevel_CH0').value = Number(v[3]) || 0;
          document.getElementById('TriggerLevel_CH1').value = Number(v[4]) || 0;
          document.getElementById('TriggerLevel_CH2').value = Number(v[5]) || 0;
@@ -581,9 +602,9 @@ function setup() {
       saveSetting('TriggerLogic', this.value);
    });
 
-   // Frequency -> ODB
-   document.getElementById('Frequency').addEventListener('change', function() {
-      saveSetting('Frequency (GHz)', parseFloat(this.value));
+   // Sampling Rate -> ODB
+   document.getElementById('SamplingRate').addEventListener('change', function() {
+      saveSetting('Sampling Rate (GHz)', parseFloat(this.value));
    });
 
    // Trigger levels -> ODB

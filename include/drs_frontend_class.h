@@ -51,8 +51,14 @@ private:
    // Trigger rate measurement in live preview (also shown in custom page)
    uint64_t m_prev_event_cnt[DRS4_MAX_BOARDS]{};
    double m_prev_time{0};
-   double m_prev_trg_scaler[DRS4_MAX_BOARDS]{};
-   double m_prev_trg_time{0};
+   // Total event counter per board (incremented in capture_and_snapshot).
+   // Used to compute software-side Acq/s rate (matches official DRS4 software).
+   std::atomic<uint64_t> m_event_cnt[DRS4_MAX_BOARDS]{};
+   // EMA of the trigger rate (Hz), smoothed across the 100ms scaler windows.
+   // Per-channel (ch0..3) + global (ch4) trigger rates, dynamically allocated
+   // to avoid a class-size-dependent heap corruption bug in this glibc/libusb
+   // combination. [boards * 5 channels]
+   double *m_trg_rate_ema{nullptr};
 
    // Connect re-entry guard
    std::string m_last_connect_val;

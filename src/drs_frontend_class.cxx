@@ -34,6 +34,10 @@ DRS4Frontend::~DRS4Frontend()
       delete m_drs;
       m_drs = nullptr;
    }
+   if (m_trg_rate_ema) {
+      delete[] m_trg_rate_ema;
+      m_trg_rate_ema = nullptr;
+   }
 }
 
 /*------------------------------------------------------------------*/
@@ -58,7 +62,7 @@ void DRS4Frontend::create_board_defaults(int board_index)
       {"SerialNumber",      0},
       {"BoardType",         0},
       {"Connect",           true},
-      {"Frequency (GHz)",   5.0},
+      {"Sampling Rate (GHz)",   5.0},
       {"InputRange",        std::string("-0.5V to +0.5V")},
       {"Options InputRange", std::array<std::string, 2>{"-0.5V to +0.5V", "0V to +1V"}},
       {"TriggerLogic",      std::string("OR")},
@@ -397,10 +401,10 @@ void DRS4Frontend::apply_board_config(int i)
 
       // ---- REG_CONFIG, REG_TRG_DELAY, DAC levels ----
 
-      // Frequency FIRST — SetFrequency internally starts domino,
+      // Sampling Rate FIRST — SetFrequency internally starts domino,
       // waits for PLL lock, then calls SoftTrigger. Do NOT call
       // StartDomino() again until after SoftTrigger in the capture flow.
-      double freq = odb_get<double>(b, "Frequency (GHz)", 5.0);
+      double freq = odb_get<double>(b, "Sampling Rate (GHz)", 5.0);
       m_boards[i]->SetFrequency(freq, true);
 
       // DominoMode=1 (continuous) for live preview.  Must be set AFTER
@@ -439,6 +443,32 @@ void DRS4Frontend::apply_board_config(int i)
 
       // Disable analog calibration (match official software init)
       m_boards[i]->EnableAcal(0, 0);
+
+      // DIAGNOSTIC: read back actual chip state to verify the board is
+      // configured the way we think it is. This helps diagnose rate
+      // discrepancies vs the official software.
+      {
+         unsigned int ctrl = m_boards[i]->GetCtrlReg();
+         unsigned short cfg = m_boards[i]->GetConfigReg();
+         int trg_src = m_boards[i]->GetTriggerSource();
+         int trg_dly = m_boards[i]->GetTriggerDelay();
+         int tcal_on = m_boards[i]->GetTcalFreq() > 0 ? 1 : 0;
+
+         double d1=0, d2=0, d3=0, d4=0;
+         m_boards[i]->ReadDAC(m_boards[i]->fDAC_TLEVEL1, &d1);
+         m_boards[i]->ReadDAC(m_boards[i]->fDAC_TLEVEL2, &d2);
+         m_boards[i]->ReadDAC(m_boards[i]->fDAC_TLEVEL3, &d3);
+         m_boards[i]->ReadDAC(m_boards[i]->fDAC_TLEVEL4, &d4);
+
+         cm_msg(MINFO, "DRS4Frontend",
+                "DIAG board%d: REG_CTRL=0x%08x REG_CONFIG=0x%04x REG_TRG_CONFIG=0x%04x trg_dly=%d tcal_on=%d",
+                i, ctrl, cfg, (unsigned short)trg_src, trg_dly, tcal_on);
+         cm_msg(MINFO, "DRS4Frontend",
+                "DIAG board%d: DAC readback TLEVEL1..4 = %.4fV %.4fV %.4fV %.4fV  (CH0..3 requested=%.4fV %.4fV %.4fV %.4fV)",
+                i, d1, d2, d3, d4,
+                trig_levels[0]/2 + 0.8, trig_levels[1]/2 + 0.8,
+                trig_levels[2]/2 + 0.8, trig_levels[3]/2 + 0.8);
+      }
 
       cm_msg(MINFO, "DRS4Frontend", "Applied config to board %d", i);
 
@@ -667,7 +697,7 @@ void DRS4Frontend::setup_watches()
          m_settings["Status"] = std::string(msg);
       });
 
-      b["Frequency (GHz)"].watch([this, i](midas::odb &key) { apply_board_config(i); });
+      b["Sampling Rate (GHz)"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["TriggerLevel_CH0 (V)"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["TriggerLevel_CH1 (V)"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["TriggerLevel_CH2 (V)"].watch([this, i](midas::odb &key) { apply_board_config(i); });
@@ -968,37 +998,56 @@ void DRS4Frontend::live_preview_loop()
       }
    }
 
-   // Initialize trigger rate measurement
-   m_prev_trg_time = 0;
-   for (int i = 0; i < DRS4_MAX_BOARDS; i++) {
-      m_prev_trg_scaler[i] = 0;
+   // Initialize trigger rate measurement (dynamic allocation to avoid
+   // class-size-dependent heap corruption)
+   if (!m_trg_rate_ema) {
+      m_trg_rate_ema = new double[DRS4_MAX_BOARDS * 5]();
+   }
+   for (int i = 0; i < DRS4_MAX_BOARDS * 5; i++) {
+      m_trg_rate_ema[i] = 0;
    }
 
    while (!m_in_end_of_run) {
-      // Measure trigger rate from scaler registers every ~1 second
+      // Loop runs continuously (no gating) so captures happen as fast as
+      // the hardware allows. Rate ODB updates are decoupled and run on
+      // their own 1-second cadence below.
       auto now = std::chrono::system_clock::now();
       double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
-      if (m_prev_trg_time > 0) {
-         double dt = now_s - m_prev_trg_time;
-         if (dt >= 1.0) {
-            for (int i = 0; i < m_num_boards; i++) {
-               if (!m_board_hw_connected[i]) continue;
-               // The scaler returns trigger rate * 10 (measurement clock is 10 Hz)
-               // So scaler=100 means 10 Hz trigger rate
-               unsigned int scaler = m_boards[i]->GetScaler(0);
-               double rate = scaler / 10.0;  // Convert back to Hz
-               char key[64];
-               snprintf(key, sizeof(key), "TrgRate_B%d", i);
-               try { m_settings[key] = (float)rate; } catch (...) {}
-            }
-            m_prev_trg_time = now_s;
+      if (m_prev_time <= 0) {
+         m_prev_time = now_s;
+      }
+      double dt = now_s - m_prev_time;
+      bool rate_tick = (dt >= 1.0);
+      if (rate_tick) {
+         m_prev_time = now_s;
+      }
+      for (int i = 0; i < m_num_boards; i++) {
+         if (!m_board_hw_connected[i]) continue;
+         // Per-channel rates (ch0..3) and global hardware trigger rate (ch4).
+         // No EMA smoothing — display the raw GetScaler() value to match
+         // the official DRS4 software exactly.
+         char key[64];
+         for (int c = 0; c < 4; c++) {
+            unsigned int s = m_boards[i]->GetScaler(c);
+            snprintf(key, sizeof(key), "TrgRate_B%d_CH%d", i, c+1);
+            try { m_settings[key] = (float)s; } catch (...) {}
          }
-      } else {
-         m_prev_trg_time = now_s;
-         for (int i = 0; i < m_num_boards; i++) {
-            if (m_board_hw_connected[i]) {
-               m_prev_trg_scaler[i] = m_boards[i]->GetScaler(0);
-            }
+         unsigned int s4 = m_boards[i]->GetScaler(4);
+         snprintf(key, sizeof(key), "TrgRate_B%d", i);
+         try { m_settings[key] = (float)s4; } catch (...) {}
+
+         // Software-side Acq/s rate: count of successful captures / dt.
+         // This matches the official DRS4 software's "Acq/s" display.
+         // Only computed/updated on the 1s rate-tick to get a meaningful
+         // average rate (otherwise we'd just see 0.0 every loop iteration).
+         if (rate_tick) {
+            uint64_t cur_cnt = m_event_cnt[i].load(std::memory_order_relaxed);
+            uint64_t delta = (m_prev_event_cnt[i] <= cur_cnt)
+                               ? (cur_cnt - m_prev_event_cnt[i]) : 0;
+            double acq_rate = (dt > 0) ? (double)delta / dt : 0.0;
+            m_prev_event_cnt[i] = cur_cnt;
+            snprintf(key, sizeof(key), "TrgRate_B%d_Acq", i);
+            try { m_settings[key] = (float)acq_rate; } catch (...) {}
          }
       }
 
@@ -1112,9 +1161,12 @@ void DRS4Frontend::live_preview_loop()
                }
             }
          }
+      } else {
+         // When a MIDAS run is active, the readout_loop is doing the
+         // captures. Just yield briefly so we don't busy-loop while
+         // waiting for end-of-run.
+         usleep(1000);
       }
-
-      usleep(100000);
    }
 }
 
@@ -1147,19 +1199,17 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
          // position, then the FPGA reads out analog data to RAM.
          // Wait for !IsBusy() so the readout (and stop cell) is valid.
          m_boards[i]->StartDomino();
-         usleep(200);
-
          m_boards[i]->SoftTrigger();
 
          int loops = 0;
          while (m_boards[i]->IsBusy() && loops < 10000) {
-            usleep(10);
+            usleep(1);
             loops++;
          }
       } else {
          // Normal mode: hardware trigger already fired, wait for readout
          for (int j = 0; j < 10000 && m_boards[i]->IsBusy(); j++)
-            usleep(10);
+            usleep(1);
       }
 
       m_boards[i]->TransferWaves(0, 8);
@@ -1181,6 +1231,9 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
          cm_msg(MINFO, "DRS4Frontend",
                 "Snapshot #%d: board=%d sc=%d freq=%.3f vcal=%d tcal=%d delay=%dns (auto=%d)",
                 snap_cnt, i, stop_cell, freq, vcal, tcal, delay_ns, auto_mode);
+
+      // Count this capture for software-side Acq/s rate.
+      m_event_cnt[i].fetch_add(1, std::memory_order_relaxed);
 
       std::lock_guard<std::mutex> lock(m_snapshot_mutex);
       m_snapshot_freq = freq;
