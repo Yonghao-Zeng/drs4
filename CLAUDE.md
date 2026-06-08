@@ -97,20 +97,25 @@ right.
 position on the time axis** (oscilloscope model), not the raw DRS4 LUT
 delay. For UI value 0 the T marker sits at the left edge of the screen
 (time 0); for UI value 100 the T marker sits at time 100 ns; the
-maximum UI value is `total_ns − 29ns` (≈171 ns at 5.12 GHz).
+maximum UI value is `total_ns` (≈205 ns at 5 GHz).
 
 The actual hardware LUT delay sent to the DRS4 is the inverse:
-`true_delay = (total_ns − 29ns) − user_delay`. This way, the trigger
-cell (and the actual signal rising edge it captures) sits at
-`user_delay` on the time axis — so the T marker always lands on the
-rising edge of the captured signal.
+`true_delay = total_ns − user_delay`. The analog trigger fires, the
+domino keeps running for `true_delay` ns (≈ LUT ticks × 6.2 ns), then
+the stop cell latches — so the rising edge sits at
+`time = total_ns − true_delay = user_delay` on the time axis. The
+T marker is drawn at `user_delay`, so it lands on the rising edge.
 
-**Hardware note**: The DRS4 evaluation board has a minimum ~29ns fixed
-comparator/FPGA propagation delay (`23.5 + 28.2/freq` in
-`SetTriggerDelayPercent`). The hardware's trigger cell sits at
-`total_ns − (true_delay + 29ns)`. With the UI mapping above,
-`true_delay + 29ns = total_ns − user_delay`, so the trigger cell sits
-at `user_delay` on the time axis — exactly where the T marker is drawn.
+**Hardware note (fixed offset)**: The official `SetTriggerDelayPercent`
+adds a `23.5 + 28.2/freq` ns correction to `fTriggerDelayNs` to
+approximate the comparator/FPGA propagation delay — that correction
+is only applied on the *displayed* `fTriggerDelayNs`; the LUT ticks
+written to the hardware are pure (no +29). Since this frontend calls
+`SetTriggerDelayNs(delay)` (which stores `delay` directly as
+`fTriggerDelayNs` and converts to ticks without the +29), the
+`true_delay` we send is the raw LUT delay. No extra offset is needed
+in the C++ formula — the +29 only matters when reading back
+`GetTriggerDelayNs()` for display, which we don't do.
 
 **Web UI time axis**: `timeToX` maps `t=0` to the left edge of the
 screen (left-aligned, positive-only):

@@ -134,7 +134,9 @@
       <div class="control-group"><label>CH3:</label><input type="number" id="TriggerLevel_CH2" value="0.05" step="0.01"></div>
       <div class="control-group"><label>CH4:</label><input type="number" id="TriggerLevel_CH3" value="0.05" step="0.01"></div>
       <div class="control-group">
-         <label>Delay (ns):</label><input type="number" id="TriggerDelay" value="0" step="10" style="width:70px;">
+         <label>Delay (ns):</label>
+         <input type="range" id="TriggerDelay" min="0" max="205" step="1" value="0" style="width:200px;vertical-align:middle;">
+         <span id="TriggerDelayVal" style="display:inline-block;min-width:42px;margin-left:6px;font-family:monospace;">0</span>
       </div>
       <div class="control-group" style="margin-left:auto;">
          <button id="calibrateBtn" style="background:#0066cc;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:bold;">Calibrate</button>
@@ -395,6 +397,14 @@ function drawWaveform() {
    document.getElementById('trig').textContent = snapshot.triggered || 'no';
    document.getElementById('time').textContent = snapshot.timestamp || '-';
 
+   // Keep the trigger delay slider in sync with the current total_ns.
+   var f = Number(snapshot.freq) || 5.0;
+   if (f > 0) {
+      var totalNs = Math.ceil(1024 / f);
+      var slider = document.getElementById('TriggerDelay');
+      if (slider.max !== String(totalNs)) slider.max = String(totalNs);
+   }
+
    // Time range
    var tMin = time[0], tMax = time[time.length-1];
    document.getElementById('trange').textContent = tMin.toFixed(1) + ' - ' + tMax.toFixed(1) + ' ns';
@@ -492,6 +502,7 @@ function loadSettings() {
          document.getElementById('TriggerLevel_CH2').value = Number(v[5]) || 0;
          document.getElementById('TriggerLevel_CH3').value = Number(v[6]) || 0;
          document.getElementById('TriggerDelay').value = Number(v[7]) || 0;
+         document.getElementById('TriggerDelayVal').textContent = document.getElementById('TriggerDelay').value;
          document.getElementById('EnableCH1').checked = Boolean(v[8]);
          document.getElementById('EnableCH2').checked = Boolean(v[9]);
          document.getElementById('EnableCH3').checked = Boolean(v[10]);
@@ -618,9 +629,18 @@ function setup() {
       })(ch, levelKeys[ch]);
    }
 
-   // Trigger delay -> ODB
-   document.getElementById('TriggerDelay').addEventListener('change', function() {
-      saveSetting('TriggerDelayNs', parseInt(this.value) || 0);
+   // Trigger delay -> ODB. Use 'input' so the value text updates live as
+   // you drag; debounce the ODB write so we don't fire apply_board_config
+   // on every pixel of slider movement.
+   var delayInput = document.getElementById('TriggerDelay');
+   var delayVal = document.getElementById('TriggerDelayVal');
+   var delaySaveTimer = null;
+   delayInput.addEventListener('input', function() {
+      delayVal.textContent = this.value;
+      if (delaySaveTimer) clearTimeout(delaySaveTimer);
+      delaySaveTimer = setTimeout(function() {
+         saveSetting('TriggerDelayNs', parseInt(delayInput.value) || 0);
+      }, 100);
    });
 
    // EnableCH checkboxes -> ODB
