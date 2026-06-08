@@ -3,208 +3,776 @@
 <head>
    <title>DRS4 Oscilloscope</title>
    <meta charset="utf-8">
+   <link rel="preconnect" href="https://fonts.googleapis.com">
+   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
    <style>
+      :root {
+         /* Anthropic Claude design tokens */
+         --canvas:           #faf9f5;
+         --surface-soft:     #f5f0e8;
+         --surface-card:     #efe9de;
+         --surface-strong:   #e8e0d2;
+         --surface-dark:     #181715;
+         --surface-dark-elev:#252320;
+         --surface-dark-soft:#1f1e1b;
+         --primary:          #cc785c;
+         --primary-active:   #a9583e;
+         --primary-disabled: #e6dfd8;
+         --ink:              #141413;
+         --body-strong:      #252523;
+         --body:             #3d3d3a;
+         --muted:            #6c6a64;
+         --muted-soft:       #8e8b82;
+         --on-primary:       #ffffff;
+         --on-dark:          #faf9f5;
+         --on-dark-soft:     #a09d96;
+         --hairline:         #e6dfd8;
+         --hairline-soft:    #ebe6df;
+         --accent-teal:      #5db8a6;
+         --accent-amber:     #e8a55a;
+         --success:          #5db872;
+         --error:            #c64545;
+
+         --r-xs: 4px;  --r-sm: 6px;  --r-md: 8px;
+         --r-lg: 12px; --r-xl: 16px; --r-pill: 9999px;
+
+         --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+         --s-5: 24px; --s-6: 32px; --s-7: 48px; --s-8: 96px;
+
+         /* Trace colors (visible on dark scope, harmonized with palette) */
+         --ch1: #5db872;
+         --ch2: #ff6b6b;
+         --ch3: #e8a55a;
+         --ch4: #5db8a6;
+      }
+
       * { box-sizing: border-box; }
-      body {
-         font-family: Arial, sans-serif;
+
+      html, body {
          margin: 0;
-         padding: 20px;
-         background: #f5f5f5;
-         color: #333;
+         padding: 0;
+         background: var(--canvas);
+         color: var(--body);
+         font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         font-size: 16px;
+         line-height: 1.55;
+         -webkit-font-smoothing: antialiased;
+         -moz-osx-font-smoothing: grayscale;
       }
-      h1 { color: #0066cc; margin-bottom: 15px; text-align: center; }
 
-      .container { max-width: 1200px; margin: 0 auto; }
-
-      .controls {
-         background: #fff; padding: 10px 14px; border-radius: 8px;
-         margin-bottom: 10px; display: flex; flex-wrap: wrap;
-         gap: 10px; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      .app {
+         max-width: 1200px;
+         margin: 0 auto;
+         padding: var(--s-5) var(--s-5) var(--s-7);
       }
-      .control-group { display: flex; align-items: center; gap: 5px; }
-      .control-group label { font-size: 12px; color: #666; white-space: nowrap; }
 
+      /* ---------- Header ---------- */
+      .app-header {
+         background: var(--canvas);
+         border-bottom: 1px solid var(--hairline);
+         padding: var(--s-4) var(--s-5);
+         display: flex;
+         align-items: center;
+         justify-content: space-between;
+         gap: var(--s-4);
+         margin-bottom: var(--s-6);
+      }
+      .brand {
+         display: flex;
+         align-items: center;
+         gap: var(--s-3);
+      }
+      .brand-mark {
+         color: var(--ink);
+         flex-shrink: 0;
+      }
+      .brand-wordmark {
+         font-family: "Cormorant Garamond", "Tiempos Headline", "Times New Roman", serif;
+         font-weight: 500;
+         font-size: 28px;
+         line-height: 1;
+         letter-spacing: -0.3px;
+         color: var(--ink);
+      }
+      .brand-subtitle {
+         font-size: 14px;
+         color: var(--muted);
+         margin-left: var(--s-2);
+         padding-left: var(--s-3);
+         border-left: 1px solid var(--hairline);
+      }
+      .header-meta {
+         display: flex;
+         align-items: center;
+         gap: var(--s-4);
+      }
+      .live-pill {
+         display: inline-flex;
+         align-items: center;
+         gap: var(--s-2);
+         padding: 6px 14px;
+         background: var(--surface-card);
+         color: var(--ink);
+         font-size: 13px;
+         font-weight: 500;
+         border-radius: var(--r-pill);
+      }
+      .live-dot {
+         width: 8px; height: 8px;
+         border-radius: 50%;
+         background: var(--success);
+         box-shadow: 0 0 0 0 rgba(93, 184, 114, 0.5);
+         animation: pulse 1.6s ease-out infinite;
+      }
+      @keyframes pulse {
+         0%   { box-shadow: 0 0 0 0 rgba(93, 184, 114, 0.55); }
+         70%  { box-shadow: 0 0 0 8px rgba(93, 184, 114, 0); }
+         100% { box-shadow: 0 0 0 0 rgba(93, 184, 114, 0); }
+      }
+      .header-timestamp {
+         font-family: "JetBrains Mono", ui-monospace, monospace;
+         font-size: 13px;
+         color: var(--muted);
+      }
+
+      /* ---------- Page title ---------- */
+      .page-title {
+         font-family: "Cormorant Garamond", "Tiempos Headline", "Times New Roman", serif;
+         font-weight: 400;
+         font-size: 36px;
+         line-height: 1.15;
+         letter-spacing: -0.5px;
+         color: var(--ink);
+         margin: 0 0 var(--s-2) 0;
+      }
+      .page-subtitle {
+         font-size: 16px;
+         color: var(--muted);
+         margin: 0 0 var(--s-6) 0;
+         max-width: 720px;
+      }
+
+      /* ---------- Cards ---------- */
+      .card {
+         background: var(--surface-card);
+         border: 1px solid var(--hairline);
+         border-radius: var(--r-lg);
+         padding: var(--s-5);
+         margin-bottom: var(--s-4);
+      }
+      .card-label {
+         font-size: 12px;
+         font-weight: 500;
+         letter-spacing: 1.5px;
+         text-transform: uppercase;
+         color: var(--muted);
+         margin: 0 0 var(--s-4) 0;
+      }
+      .card-helper {
+         font-size: 13px;
+         color: var(--muted);
+         margin-top: -8px;
+         margin-bottom: var(--s-4);
+      }
+
+      /* ---------- Fields / form controls ---------- */
+      .field-grid {
+         display: grid;
+         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+         gap: var(--s-4) var(--s-5);
+      }
+      .field {
+         display: flex;
+         flex-direction: column;
+         gap: 6px;
+         min-width: 0;
+      }
+      .field-label {
+         font-size: 13px;
+         font-weight: 500;
+         color: var(--body-strong);
+         letter-spacing: 0;
+      }
+      .field-row {
+         display: flex;
+         align-items: center;
+         gap: var(--s-3);
+         flex-wrap: wrap;
+      }
+      .field-inline {
+         display: flex;
+         align-items: center;
+         gap: var(--s-2);
+      }
+
+      /* select + number inputs */
       select, input[type="number"] {
-         background: #fff; color: #333; border: 1px solid #0066cc;
-         padding: 4px 6px; border-radius: 4px; font-size: 12px;
+         appearance: none;
+         -webkit-appearance: none;
+         background-color: var(--canvas);
+         color: var(--ink);
+         border: 1px solid var(--hairline);
+         border-radius: var(--r-md);
+         padding: 10px 36px 10px 14px;
+         font-family: inherit;
+         font-size: 14px;
+         line-height: 1.2;
+         height: 40px;
+         width: 100%;
+         transition: border-color 0.12s ease, box-shadow 0.12s ease;
       }
-      input[type="number"] { width: 65px; }
-      input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
-      input[type="range"] { width: 80px; cursor: pointer; }
+      select {
+         background-image:
+            url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%236c6a64' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l4 4 4-4'/></svg>");
+         background-repeat: no-repeat;
+         background-position: right 14px center;
+         background-size: 10px 6px;
+         padding-right: 36px;
+      }
+      input[type="number"] {
+         padding: 10px 14px;
+         padding-right: 14px;
+         width: 100px;
+      }
+      select:hover, input[type="number"]:hover { border-color: var(--muted-soft); }
+      select:focus, input[type="number"]:focus {
+         outline: none;
+         border-color: var(--primary);
+         box-shadow: 0 0 0 3px rgba(204, 120, 92, 0.18);
+      }
 
-      .section-label {
-         font-size: 12px; color: #888; font-weight: bold;
-         margin-right: 5px; white-space: nowrap;
+      /* range slider */
+      input[type="range"] {
+         -webkit-appearance: none;
+         appearance: none;
+         width: 100%;
+         background: transparent;
+         cursor: pointer;
+         height: 28px;
+         margin: 0;
+      }
+      input[type="range"]::-webkit-slider-runnable-track {
+         height: 4px;
+         background: var(--hairline);
+         border-radius: var(--r-pill);
+      }
+      input[type="range"]::-moz-range-track {
+         height: 4px;
+         background: var(--hairline);
+         border-radius: var(--r-pill);
+      }
+      input[type="range"]::-webkit-slider-thumb {
+         -webkit-appearance: none;
+         appearance: none;
+         width: 18px; height: 18px;
+         border-radius: 50%;
+         background: var(--primary);
+         border: 3px solid var(--canvas);
+         margin-top: -7px;
+         box-shadow: 0 1px 2px rgba(20,20,19,0.15);
+         cursor: grab;
+         transition: transform 0.08s ease, background 0.12s ease;
+      }
+      input[type="range"]::-moz-range-thumb {
+         width: 18px; height: 18px;
+         border-radius: 50%;
+         background: var(--primary);
+         border: 3px solid var(--canvas);
+         box-shadow: 0 1px 2px rgba(20,20,19,0.15);
+         cursor: grab;
+      }
+      input[type="range"]:hover::-webkit-slider-thumb { background: var(--primary-active); }
+      input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.1); cursor: grabbing; }
+
+      /* checkbox */
+      input[type="checkbox"] {
+         -webkit-appearance: none;
+         appearance: none;
+         width: 18px; height: 18px;
+         border: 1.5px solid var(--hairline);
+         border-radius: var(--r-xs);
+         background: var(--canvas);
+         cursor: pointer;
+         position: relative;
+         flex-shrink: 0;
+         transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      input[type="checkbox"]:hover { border-color: var(--muted-soft); }
+      input[type="checkbox"]:checked {
+         background: var(--primary);
+         border-color: var(--primary);
+      }
+      input[type="checkbox"]:checked::after {
+         content: "";
+         position: absolute;
+         left: 5px; top: 1px;
+         width: 5px; height: 10px;
+         border: solid var(--on-primary);
+         border-width: 0 2px 2px 0;
+         transform: rotate(45deg);
       }
 
-      .scope-container {
-         background: #fff; border: 2px solid #0066cc;
-         border-radius: 8px; padding: 10px; margin-bottom: 15px;
-         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      /* slider value display (next to delay slider) */
+      .slider-value {
+         display: inline-block;
+         min-width: 56px;
+         padding: 4px 10px;
+         font-family: "JetBrains Mono", ui-monospace, monospace;
+         font-size: 13px;
+         color: var(--ink);
+         background: var(--canvas);
+         border: 1px solid var(--hairline);
+         border-radius: var(--r-md);
+         text-align: right;
       }
-      canvas { display: block; margin: 0 auto; background: #000; border-radius: 4px; }
 
-      .ch-row {
-         display: flex; align-items: center; gap: 12px;
-         padding: 3px 0;
+      /* ---------- Trigger section ---------- */
+      .trigger-row {
+         display: grid;
+         grid-template-columns: repeat(4, 1fr);
+         gap: var(--s-4) var(--s-5);
+         align-items: end;
       }
-      .ch-color-dot {
-         width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0;
+      .trigger-channel {
+         display: flex;
+         flex-direction: column;
+         gap: var(--s-2);
+         padding: var(--s-3) var(--s-4);
+         background: var(--canvas);
+         border: 1px solid var(--hairline-soft);
+         border-radius: var(--r-md);
       }
-      .ch-label { font-size: 11px; font-weight: bold; width: 24px; }
+      .trigger-channel-head {
+         display: flex;
+         align-items: center;
+         justify-content: space-between;
+         gap: var(--s-2);
+      }
+      .trigger-channel-name {
+         display: flex;
+         align-items: center;
+         gap: var(--s-2);
+         font-size: 13px;
+         font-weight: 500;
+         color: var(--ink);
+      }
+      .trigger-channel-dot {
+         width: 10px; height: 10px;
+         border-radius: 50%;
+      }
+      .trigger-channel-level {
+         display: flex;
+         align-items: center;
+         gap: var(--s-2);
+      }
+      .trigger-channel-level .field-label { color: var(--muted); font-weight: 400; }
+      .trigger-channel-level input[type="number"] { width: 80px; height: 34px; padding: 6px 10px; font-size: 13px; }
 
-      .info-panel {
-         background: #fff; padding: 12px; border-radius: 8px;
-         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      .delay-row {
+         display: grid;
+         grid-template-columns: 1fr;
+         gap: var(--s-2);
+         margin-top: var(--s-5);
+         padding-top: var(--s-5);
+         border-top: 1px solid var(--hairline-soft);
       }
-      .info-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+      .delay-head {
+         display: flex;
+         align-items: center;
+         justify-content: space-between;
+         gap: var(--s-3);
+      }
+      .delay-head .field-label { font-size: 14px; }
+
+      /* ---------- Channels section ---------- */
+      .channel-list {
+         display: flex;
+         flex-direction: column;
+         gap: var(--s-3);
+      }
+      .channel-row {
+         display: grid;
+         grid-template-columns: 32px 50px 90px 1fr 110px;
+         align-items: center;
+         gap: var(--s-4);
+         padding: var(--s-3) var(--s-4);
+         background: var(--canvas);
+         border: 1px solid var(--hairline-soft);
+         border-radius: var(--r-md);
+      }
+      .channel-row .ch-color-dot {
+         width: 14px; height: 14px;
+         border-radius: 50%;
+      }
+      .channel-row .ch-name {
+         font-size: 14px;
+         font-weight: 500;
+         color: var(--ink);
+      }
+      .channel-row .ch-show {
+         display: flex;
+         align-items: center;
+         gap: var(--s-2);
+         font-size: 13px;
+         color: var(--muted);
+      }
+      .channel-row .ch-pos {
+         display: flex;
+         align-items: center;
+         gap: var(--s-3);
+      }
+      .channel-row .ch-pos input[type="range"] { width: 100%; }
+      .channel-row .ch-pos input[type="number"] { width: 72px; height: 34px; padding: 6px 10px; font-size: 13px; }
+      .channel-row .ch-pos-label {
+         font-size: 13px;
+         color: var(--muted);
+         min-width: 38px;
+      }
+
+      /* ---------- Scope (dark surface) ---------- */
+      .scope-card {
+         background: var(--surface-dark);
+         border: 1px solid var(--surface-dark-elev);
+         border-radius: var(--r-lg);
+         padding: var(--s-5);
+         margin-bottom: var(--s-4);
+      }
+      .scope-card-header {
+         display: flex;
+         align-items: center;
+         justify-content: space-between;
+         margin-bottom: var(--s-4);
+      }
+      .scope-card-label {
+         font-size: 12px;
+         font-weight: 500;
+         letter-spacing: 1.5px;
+         text-transform: uppercase;
+         color: var(--on-dark-soft);
+      }
+      .scope-card-meta {
+         display: flex;
+         align-items: center;
+         gap: var(--s-4);
+         font-family: "JetBrains Mono", ui-monospace, monospace;
+         font-size: 13px;
+         color: var(--on-dark-soft);
+      }
+      .scope-card-meta .scope-tc { color: var(--primary); }
+      .scope-card-meta .scope-trig-on { color: var(--success); }
+      .scope-card-meta .scope-trig-off { color: var(--on-dark-soft); }
+      .scope-frame {
+         background: #000;
+         border-radius: var(--r-md);
+         padding: 0;
+         overflow: hidden;
+      }
+      .scope-frame canvas {
+         display: block;
+         margin: 0 auto;
+         background: #000;
+      }
+
+      /* ---------- Status / info grid ---------- */
+      .info-card {
+         background: var(--surface-card);
+         border: 1px solid var(--hairline);
+         border-radius: var(--r-lg);
+         padding: var(--s-5);
+         margin-bottom: var(--s-4);
+      }
+      .info-grid {
+         display: grid;
+         grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+         gap: var(--s-3) var(--s-4);
+      }
       .info-item {
-         padding: 5px 10px; background: #f0f0f0; border-radius: 4px; min-width: 110px;
+         padding: var(--s-3) var(--s-4);
+         background: var(--canvas);
+         border: 1px solid var(--hairline-soft);
+         border-radius: var(--r-md);
       }
-      .info-item .lbl { color: #888; font-size: 11px; }
-      .info-item .val { color: #0066cc; font-weight: bold; font-size: 13px; }
+      .info-item .lbl {
+         font-size: 11px;
+         font-weight: 500;
+         letter-spacing: 1.2px;
+         text-transform: uppercase;
+         color: var(--muted);
+      }
+      .info-item .val {
+         display: block;
+         margin-top: 4px;
+         font-family: "Cormorant Garamond", "Tiempos Headline", "Times New Roman", serif;
+         font-size: 22px;
+         font-weight: 500;
+         line-height: 1.2;
+         color: var(--ink);
+         letter-spacing: -0.2px;
+      }
+      .info-item.info-accent .val { color: var(--primary); }
+      .info-item.info-strong .val { color: var(--ink); font-weight: 600; }
+
+      /* Channel-ranges card: small chip-style */
+      .ranges-card .info-item .val {
+         font-family: "JetBrains Mono", ui-monospace, monospace;
+         font-size: 14px;
+         font-weight: 400;
+      }
+
+      /* Hide legacy section-label that the old CSS used */
+      .section-label { display: none; }
+
+      /* Status pill colors used by saveSetting()'s inline write to #status */
+      #status.live-ok { color: var(--success); }
+      #status.live-err { color: var(--error); }
    </style>
 </head>
 <body>
-<div class="container">
-   <h1>DRS4 Oscilloscope</h1>
 
-   <!-- Main settings -->
-   <div class="controls">
-      <span class="section-label">Acquisition:</span>
-      <div class="control-group">
-         <label>Board:</label>
-         <select id="BoardSelect"><option value="0">Board 0</option></select>
-      </div>
-      <div class="control-group">
-         <label>Trigger Mode:</label>
-         <select id="TriggerMode">
-            <option value="Auto">Auto (Free-Run)</option>
-            <option value="Normal">Normal (Triggered)</option>
-         </select>
-      </div>
-      <div class="control-group">
-         <label>Logic:</label>
-         <select id="TriggerLogic">
-            <option value="OR">OR</option>
-            <option value="AND">AND</option>
-         </select>
-      </div>
-      <div class="control-group">
-         <label>Sampling Rate:</label>
-         <select id="SamplingRate">
-            <option value="5.0">5 GHz</option>
-            <option value="2.5">2.5 GHz</option>
-            <option value="1.0">1 GHz</option>
-            <option value="0.5">0.5 GHz</option>
-         </select>
-      </div>
-      <span class="section-label" style="margin-left:8px;">Display:</span>
-      <div class="control-group">
-         <label>Time/Div:</label>
-         <select id="TimeDiv">
-            <option value="1">1 ns</option><option value="2">2 ns</option>
-            <option value="5">5 ns</option><option value="10" selected>10 ns</option>
-            <option value="20">20 ns</option><option value="50">50 ns</option>
-            <option value="100">100 ns</option><option value="200">200 ns</option>
-            <option value="500">500 ns</option><option value="1000">1 us</option>
-         </select>
-      </div>
-      <div class="control-group">
-         <label>V/div:</label>
-         <select id="VoltDiv">
-            <option value="10">10 mV</option><option value="20">20 mV</option>
-            <option value="50">50 mV</option><option value="100" selected>100 mV</option>
-            <option value="200">200 mV</option><option value="500">500 mV</option>
-            <option value="1000">1 V</option>
-         </select>
-      </div>
+<header class="app-header">
+   <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 16 16" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+         <line x1="8" y1="1"  x2="8" y2="15"/>
+         <line x1="1" y1="8"  x2="15" y2="8"/>
+         <line x1="3" y1="3"  x2="13" y2="13"/>
+         <line x1="13" y1="3" x2="3"  y2="13"/>
+      </svg>
+      <span class="brand-wordmark">DRS4</span>
+      <span class="brand-subtitle">Oscilloscope · MIDAS Frontend</span>
    </div>
+   <div class="header-meta">
+      <span class="live-pill"><span class="live-dot"></span>Live</span>
+      <span class="header-timestamp" id="hdr-time">—</span>
+   </div>
+</header>
 
-   <!-- Trigger settings -->
-   <div class="controls">
-      <span class="section-label">Trigger Source (ODB EnableCH):</span>
-      <div class="control-group"><label>CH1:</label><input type="checkbox" id="EnableCH1" checked></div>
-      <div class="control-group"><label>CH2:</label><input type="checkbox" id="EnableCH2" checked></div>
-      <div class="control-group"><label>CH3:</label><input type="checkbox" id="EnableCH3" checked></div>
-      <div class="control-group"><label>CH4:</label><input type="checkbox" id="EnableCH4" checked></div>
-      <span class="section-label" style="margin-left:10px;">Trigger Level (V):</span>
-      <div class="control-group"><label>CH1:</label><input type="number" id="TriggerLevel_CH0" value="0.05" step="0.01"></div>
-      <div class="control-group"><label>CH2:</label><input type="number" id="TriggerLevel_CH1" value="0.05" step="0.01"></div>
-      <div class="control-group"><label>CH3:</label><input type="number" id="TriggerLevel_CH2" value="0.05" step="0.01"></div>
-      <div class="control-group"><label>CH4:</label><input type="number" id="TriggerLevel_CH3" value="0.05" step="0.01"></div>
-      <div class="control-group">
-         <label>Delay (ns):</label>
-         <input type="range" id="TriggerDelay" min="0" max="205" step="1" value="0" style="width:200px;vertical-align:middle;">
-         <span id="TriggerDelayVal" style="display:inline-block;min-width:42px;margin-left:6px;font-family:monospace;">0</span>
-      </div>
-      <div class="control-group" style="margin-left:auto;">
-         <button id="calibrateBtn" style="background:#0066cc;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-weight:bold;">Calibrate</button>
-      </div>
-   </div>
+<div class="app">
 
-   <!-- Channel display controls: visibility + vertical position -->
-   <div class="controls">
-      <span class="section-label">Channel Display:</span>
-      <div class="ch-row">
-         <span style="color:#00cc00;font-size:18px;">&#x25CF;</span>
-         <span class="ch-label">CH1</span>
-         <label>Show:</label><input type="checkbox" id="ShowCH1" checked>
-         <label>Pos (mV):</label><input type="range" id="PosCH1" min="-500" max="500" value="0" step="10">
-         <input type="number" id="PosValCH1" value="0" step="10" style="width:60px;">
-      </div>
-      <div class="ch-row">
-         <span style="color:#ff0000;font-size:18px;">&#x25CF;</span>
-         <span class="ch-label">CH2</span>
-         <label>Show:</label><input type="checkbox" id="ShowCH2" checked>
-         <label>Pos (mV):</label><input type="range" id="PosCH2" min="-500" max="500" value="0" step="10">
-         <input type="number" id="PosValCH2" value="0" step="10" style="width:60px;">
-      </div>
-      <div class="ch-row">
-         <span style="color:#cc9900;font-size:18px;">&#x25CF;</span>
-         <span class="ch-label">CH3</span>
-         <label>Show:</label><input type="checkbox" id="ShowCH3" checked>
-         <label>Pos (mV):</label><input type="range" id="PosCH3" min="-500" max="500" value="0" step="10">
-         <input type="number" id="PosValCH3" value="0" step="10" style="width:60px;">
-      </div>
-      <div class="ch-row">
-         <span style="color:#0099cc;font-size:18px;">&#x25CF;</span>
-         <span class="ch-label">CH4</span>
-         <label>Show:</label><input type="checkbox" id="ShowCH4" checked>
-         <label>Pos (mV):</label><input type="range" id="PosCH4" min="-500" max="500" value="0" step="10">
-         <input type="number" id="PosValCH4" value="0" step="10" style="width:60px;">
-      </div>
-   </div>
+   <h1 class="page-title">Waveform capture &amp; trigger control</h1>
+   <p class="page-subtitle">Live preview of DRS4 board waveforms. Adjust sampling rate, trigger levels, and channel offsets; trigger calibration runs from the ODB settings panel.</p>
 
-   <!-- Oscilloscope display -->
-   <div class="scope-container">
-      <canvas id="scope" width="1100" height="500"></canvas>
-   </div>
+   <!-- Acquisition + Display -->
+   <section class="card">
+      <h2 class="card-label">Acquisition &amp; Display</h2>
+      <div class="field-grid">
+         <div class="field">
+            <label class="field-label" for="BoardSelect">Board</label>
+            <select id="BoardSelect"><option value="0">Board 0</option></select>
+         </div>
+         <div class="field">
+            <label class="field-label" for="TriggerMode">Trigger Mode</label>
+            <select id="TriggerMode">
+               <option value="Auto">Auto (Free-Run)</option>
+               <option value="Normal">Normal (Triggered)</option>
+            </select>
+         </div>
+         <div class="field">
+            <label class="field-label" for="TriggerLogic">Trigger Logic</label>
+            <select id="TriggerLogic">
+               <option value="OR">OR</option>
+               <option value="AND">AND</option>
+            </select>
+         </div>
+         <div class="field">
+            <label class="field-label" for="SamplingRate">Sampling Rate</label>
+            <select id="SamplingRate">
+               <option value="5.0">5 GHz</option>
+               <option value="2.5">2.5 GHz</option>
+               <option value="1.0">1 GHz</option>
+               <option value="0.5">0.5 GHz</option>
+               <option value="0.7">0.7 GHz</option>
+            </select>
+         </div>
+         <div class="field">
+            <label class="field-label" for="TimeDiv">Time / Division</label>
+            <select id="TimeDiv">
+               <option value="1">1 ns</option>
+               <option value="2">2 ns</option>
+               <option value="5">5 ns</option>
+               <option value="10" selected>10 ns</option>
+               <option value="20">20 ns</option>
+               <option value="50">50 ns</option>
+               <option value="100">100 ns</option>
+               <option value="200">200 ns</option>
+               <option value="500">500 ns</option>
+               <option value="1000">1 µs</option>
+            </select>
+         </div>
+         <div class="field">
+            <label class="field-label" for="VoltDiv">Volts / Division</label>
+            <select id="VoltDiv">
+               <option value="10">10 mV</option>
+               <option value="20">20 mV</option>
+               <option value="50">50 mV</option>
+               <option value="100" selected>100 mV</option>
+               <option value="200">200 mV</option>
+               <option value="500">500 mV</option>
+               <option value="1000">1 V</option>
+            </select>
+         </div>
+      </div>
+   </section>
 
-   <!-- Info panel -->
-   <div class="info-panel">
-      <div class="info-row">
-         <div class="info-item"><div class="lbl">Status</div><div class="val" id="status">-</div></div>
-         <div class="info-item"><div class="lbl">Board</div><div class="val" id="board">-</div></div>
-         <div class="info-item"><div class="lbl">True Freq</div><div class="val" id="freq">-</div></div>
-         <div class="info-item"><div class="lbl">Time Range</div><div class="val" id="trange">-</div></div>
-         <div class="info-item"><div class="lbl">Trigger Cell</div><div class="val" id="tc">-</div></div>
-         <div class="info-item"><div class="lbl">Triggered</div><div class="val" id="trig">-</div></div>
-         <div class="info-item"><div class="lbl">Acq/s</div><div class="val" id="rate_acq">-</div></div>
-         <div class="info-item"><div class="lbl">CH1 Trig</div><div class="val" id="rate_ch1">-</div></div>
-         <div class="info-item"><div class="lbl">CH2 Trig</div><div class="val" id="rate_ch2">-</div></div>
-         <div class="info-item"><div class="lbl">CH3 Trig</div><div class="val" id="rate_ch3">-</div></div>
-         <div class="info-item"><div class="lbl">CH4 Trig</div><div class="val" id="rate_ch4">-</div></div>
-         <div class="info-item"><div class="lbl">Global Trig</div><div class="val" id="rate_global">-</div></div>
-         <div class="info-item"><div class="lbl">Last Update</div><div class="val" id="time">-</div></div>
+   <!-- Trigger -->
+   <section class="card">
+      <h2 class="card-label">Trigger</h2>
+      <p class="card-helper">Per-channel enable (ODB <code style="font-family:JetBrains Mono,monospace;font-size:12px;">EnableCHn</code>), trigger level in volts, and the post-trigger delay slider. The marker on the scope tracks the rising edge.</p>
+      <div class="trigger-row">
+         <div class="trigger-channel">
+            <div class="trigger-channel-head">
+               <span class="trigger-channel-name"><span class="trigger-channel-dot" style="background:var(--ch1)"></span>CH1</span>
+               <input type="checkbox" id="EnableCH1" checked title="Enable CH1 trigger">
+            </div>
+            <div class="trigger-channel-level">
+               <span class="field-label">Level</span>
+               <input type="number" id="TriggerLevel_CH0" value="0.05" step="0.01" min="-0.5" max="0.5">
+               <span class="field-label" style="color:var(--muted-soft)">V</span>
+            </div>
+         </div>
+         <div class="trigger-channel">
+            <div class="trigger-channel-head">
+               <span class="trigger-channel-name"><span class="trigger-channel-dot" style="background:var(--ch2)"></span>CH2</span>
+               <input type="checkbox" id="EnableCH2" checked title="Enable CH2 trigger">
+            </div>
+            <div class="trigger-channel-level">
+               <span class="field-label">Level</span>
+               <input type="number" id="TriggerLevel_CH1" value="0.05" step="0.01" min="-0.5" max="0.5">
+               <span class="field-label" style="color:var(--muted-soft)">V</span>
+            </div>
+         </div>
+         <div class="trigger-channel">
+            <div class="trigger-channel-head">
+               <span class="trigger-channel-name"><span class="trigger-channel-dot" style="background:var(--ch3)"></span>CH3</span>
+               <input type="checkbox" id="EnableCH3" checked title="Enable CH3 trigger">
+            </div>
+            <div class="trigger-channel-level">
+               <span class="field-label">Level</span>
+               <input type="number" id="TriggerLevel_CH2" value="0.05" step="0.01" min="-0.5" max="0.5">
+               <span class="field-label" style="color:var(--muted-soft)">V</span>
+            </div>
+         </div>
+         <div class="trigger-channel">
+            <div class="trigger-channel-head">
+               <span class="trigger-channel-name"><span class="trigger-channel-dot" style="background:var(--ch4)"></span>CH4</span>
+               <input type="checkbox" id="EnableCH4" checked title="Enable CH4 trigger">
+            </div>
+            <div class="trigger-channel-level">
+               <span class="field-label">Level</span>
+               <input type="number" id="TriggerLevel_CH3" value="0.05" step="0.01" min="-0.5" max="0.5">
+               <span class="field-label" style="color:var(--muted-soft)">V</span>
+            </div>
+         </div>
       </div>
-      <div class="info-row">
-         <div class="info-item"><div class="lbl">CH1 Range</div><div class="val" id="ch0">-</div></div>
-         <div class="info-item"><div class="lbl">CH2 Range</div><div class="val" id="ch1">-</div></div>
-         <div class="info-item"><div class="lbl">CH3 Range</div><div class="val" id="ch2">-</div></div>
-         <div class="info-item"><div class="lbl">CH4 Range</div><div class="val" id="ch3">-</div></div>
+
+      <div class="delay-row">
+         <div class="delay-head">
+            <span class="field-label">Trigger delay (T marker position)</span>
+            <span class="slider-value" id="TriggerDelayVal">0 ns</span>
+         </div>
+         <input type="range" id="TriggerDelay" min="0" max="205" step="1" value="0">
       </div>
-   </div>
+   </section>
+
+   <!-- Channel display -->
+   <section class="card">
+      <h2 class="card-label">Channel Display</h2>
+      <p class="card-helper">Visibility and vertical offset are local to your browser; they don't touch ODB. Drag the slider or type an exact value.</p>
+      <div class="channel-list">
+         <div class="channel-row">
+            <span class="ch-color-dot" style="background:var(--ch1)"></span>
+            <span class="ch-name">CH1</span>
+            <span class="ch-show"><input type="checkbox" id="ShowCH1" checked>Show</span>
+            <div class="ch-pos">
+               <span class="ch-pos-label">Pos</span>
+               <input type="range" id="PosCH1" min="-500" max="500" value="0" step="10">
+               <input type="number" id="PosValCH1" value="0" step="10">
+            </div>
+            <span class="field-label" style="color:var(--muted-soft);text-align:right">mV</span>
+         </div>
+         <div class="channel-row">
+            <span class="ch-color-dot" style="background:var(--ch2)"></span>
+            <span class="ch-name">CH2</span>
+            <span class="ch-show"><input type="checkbox" id="ShowCH2" checked>Show</span>
+            <div class="ch-pos">
+               <span class="ch-pos-label">Pos</span>
+               <input type="range" id="PosCH2" min="-500" max="500" value="0" step="10">
+               <input type="number" id="PosValCH2" value="0" step="10">
+            </div>
+            <span class="field-label" style="color:var(--muted-soft);text-align:right">mV</span>
+         </div>
+         <div class="channel-row">
+            <span class="ch-color-dot" style="background:var(--ch3)"></span>
+            <span class="ch-name">CH3</span>
+            <span class="ch-show"><input type="checkbox" id="ShowCH3" checked>Show</span>
+            <div class="ch-pos">
+               <span class="ch-pos-label">Pos</span>
+               <input type="range" id="PosCH3" min="-500" max="500" value="0" step="10">
+               <input type="number" id="PosValCH3" value="0" step="10">
+            </div>
+            <span class="field-label" style="color:var(--muted-soft);text-align:right">mV</span>
+         </div>
+         <div class="channel-row">
+            <span class="ch-color-dot" style="background:var(--ch4)"></span>
+            <span class="ch-name">CH4</span>
+            <span class="ch-show"><input type="checkbox" id="ShowCH4" checked>Show</span>
+            <div class="ch-pos">
+               <span class="ch-pos-label">Pos</span>
+               <input type="range" id="PosCH4" min="-500" max="500" value="0" step="10">
+               <input type="number" id="PosValCH4" value="0" step="10">
+            </div>
+            <span class="field-label" style="color:var(--muted-soft);text-align:right">mV</span>
+         </div>
+      </div>
+   </section>
+
+   <!-- Scope -->
+   <section class="scope-card">
+      <div class="scope-card-header">
+         <span class="scope-card-label">Oscilloscope</span>
+         <div class="scope-card-meta">
+            <span>Board <span id="scope-board">0</span></span>
+            <span><span id="scope-freq">—</span> GHz</span>
+            <span>TC <span class="scope-tc" id="scope-tc">—</span></span>
+            <span id="scope-trig" class="scope-trig-off">not triggered</span>
+         </div>
+      </div>
+      <div class="scope-frame">
+         <canvas id="scope" width="1100" height="500"></canvas>
+      </div>
+   </section>
+
+   <!-- Status -->
+   <section class="info-card">
+      <h2 class="card-label">Status</h2>
+      <div class="info-grid">
+         <div class="info-item info-strong"><span class="lbl">Save Status</span><span class="val" id="status">—</span></div>
+         <div class="info-item"><span class="lbl">Board</span><span class="val" id="board">—</span></div>
+         <div class="info-item"><span class="lbl">True Freq</span><span class="val" id="freq">—</span></div>
+         <div class="info-item"><span class="lbl">Time Range</span><span class="val" id="trange">—</span></div>
+         <div class="info-item"><span class="lbl">Trigger Cell</span><span class="val" id="tc">—</span></div>
+         <div class="info-item"><span class="lbl">Triggered</span><span class="val" id="trig">—</span></div>
+         <div class="info-item info-accent"><span class="lbl">Acq / s</span><span class="val" id="rate_acq">—</span></div>
+         <div class="info-item"><span class="lbl">CH1 Trig</span><span class="val" id="rate_ch1">—</span></div>
+         <div class="info-item"><span class="lbl">CH2 Trig</span><span class="val" id="rate_ch2">—</span></div>
+         <div class="info-item"><span class="lbl">CH3 Trig</span><span class="val" id="rate_ch3">—</span></div>
+         <div class="info-item"><span class="lbl">CH4 Trig</span><span class="val" id="rate_ch4">—</span></div>
+         <div class="info-item"><span class="lbl">Global Trig</span><span class="val" id="rate_global">—</span></div>
+         <div class="info-item"><span class="lbl">Last Update</span><span class="val" id="time" style="font-family:JetBrains Mono,ui-monospace,monospace;font-size:14px;font-weight:400;">—</span></div>
+      </div>
+   </section>
+
+   <!-- Channel ranges -->
+   <section class="info-card ranges-card">
+      <h2 class="card-label">Channel Ranges</h2>
+      <div class="info-grid">
+         <div class="info-item"><span class="lbl">CH1 min / max</span><span class="val" id="ch0">—</span></div>
+         <div class="info-item"><span class="lbl">CH2 min / max</span><span class="val" id="ch1">—</span></div>
+         <div class="info-item"><span class="lbl">CH3 min / max</span><span class="val" id="ch2">—</span></div>
+         <div class="info-item"><span class="lbl">CH4 min / max</span><span class="val" id="ch3">—</span></div>
+      </div>
+   </section>
+
 </div>
 
 <script src="midas.js"></script>
@@ -213,7 +781,7 @@
 var snapshot = null;
 var selectedBoard = 0;
 var ctx = document.getElementById('scope').getContext('2d');
-var colors = ['#00cc00', '#ff0000', '#cc9900', '#0099cc'];
+var colors = ['#5db872', '#ff6b6b', '#e8a55a', '#5db8a6'];
 
 // Display parameters
 var timeDiv = 25;      // ns per horizontal division
@@ -245,18 +813,17 @@ var SETTINGS_KEYS = [
 var SETTINGS_PREFIX = '/Equipment/DRS4/Settings/Boards/Board';
 
 // ---- Coordinate transforms ----
-// Positive offset shifts the trace upward on screen (higher mV = higher on scope)
 function voltToY(v, chOffset) {
    var screenHeight = canvasHeight - gridTop - gridBottom;
    var halfHeight = screenHeight / 2;
-   var screenMv = voltDiv * 5;  // mV for 5 divisions (half screen)
+   var screenMv = voltDiv * 5;
    var centerY = gridTop + halfHeight;
    return centerY - ((v + chOffset) / screenMv) * halfHeight;
 }
 
 function timeToX(t) {
    var screenWidth = canvasWidth - gridLeft - gridRight;
-   var screenNs = timeDiv * 10;  // 10 horizontal divisions
+   var screenNs = timeDiv * 10;
    return gridLeft + (t / screenNs) * screenWidth;
 }
 
@@ -268,7 +835,6 @@ function drawGrid() {
    ctx.fillStyle = '#000';
    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-   // Vertical lines (10 divisions)
    ctx.strokeStyle = '#222';
    ctx.lineWidth = 1;
    for (var i = 0; i <= 10; i++) {
@@ -276,43 +842,40 @@ function drawGrid() {
       ctx.beginPath(); ctx.moveTo(x, gridTop); ctx.lineTo(x, gridTop + sh); ctx.stroke();
    }
 
-   // Horizontal lines (5 divisions above center, 5 below)
    for (var i = 0; i <= 10; i++) {
       var y = gridTop + (i / 10) * sh;
       ctx.strokeStyle = (i === 5) ? '#555' : '#222';
       ctx.beginPath(); ctx.moveTo(gridLeft, y); ctx.lineTo(gridLeft + sw, y); ctx.stroke();
    }
 
-   // Time axis labels (ns)
    ctx.fillStyle = '#888';
-   ctx.font = '10px Arial';
+   ctx.font = '10px Inter, sans-serif';
    ctx.textAlign = 'center';
    for (var i = 0; i <= 10; i++) {
       var t = i * timeDiv;
       var x = gridLeft + (i / 10) * sw;
       var label;
-      if (Math.abs(t) >= 1000) label = (t/1000).toFixed(1) + ' us';
+      if (Math.abs(t) >= 1000) label = (t/1000).toFixed(1) + ' µs';
       else label = t.toFixed(0) + ' ns';
       ctx.fillText(label, x, gridTop + sh + 15);
    }
    ctx.fillStyle = '#aaa';
-   ctx.font = '11px Arial';
+   ctx.font = '11px Inter, sans-serif';
    ctx.fillText('Time', gridLeft + sw / 2, canvasHeight - 5);
 
-   // Voltage axis labels (mV)
    ctx.textAlign = 'right';
    for (var i = 0; i <= 10; i++) {
-      var v = (5 - i) * voltDiv;  // +5 to -5 divisions * voltDiv
+      var v = (5 - i) * voltDiv;
       var y = gridTop + (i / 10) * sh;
       ctx.fillStyle = '#888';
-      ctx.font = '10px Arial';
+      ctx.font = '10px Inter, sans-serif';
       ctx.fillText(v.toFixed(0), gridLeft - 5, y + 3);
    }
    ctx.save();
    ctx.translate(15, gridTop + sh / 2);
    ctx.rotate(-Math.PI / 2);
    ctx.fillStyle = '#aaa';
-   ctx.font = '11px Arial';
+   ctx.font = '11px Inter, sans-serif';
    ctx.textAlign = 'center';
    ctx.fillText('Voltage (mV)', 0, 0);
    ctx.restore();
@@ -334,7 +897,6 @@ function drawWaveform() {
       var wave = snapshot.channels[ch].wave;
       var offset = posOffset[ch];
 
-      // Draw waveform
       ctx.strokeStyle = colors[ch];
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -367,24 +929,22 @@ function drawWaveform() {
          }
       }
 
-      // Draw channel label at the vertical position (left side marker)
       var labelY = voltToY(0, offset);
       labelY = Math.max(gridTop + 10, Math.min(gridTop + sh - 10, labelY));
       ctx.fillStyle = colors[ch];
-      ctx.font = 'bold 11px Arial';
+      ctx.font = 'bold 11px Inter, sans-serif';
       ctx.textAlign = 'left';
       ctx.fillText('CH' + (ch+1), gridLeft + 4, labelY + 4);
    }
 
-   // Trigger delay indicator: "T" marker at trigger position
+   // T marker
    if (snapshot && snapshot.trigger_cell !== undefined) {
       var tc = snapshot.trigger_cell;
-      var time = snapshot.channels[0].time;
       var trigTime = (tc >= 0 && tc < time.length) ? time[tc] : 0;
       var xTrig = timeToX(trigTime);
       if (xTrig >= gridLeft && xTrig <= gridLeft + sw) {
-         ctx.fillStyle = '#ff6600';
-         ctx.font = 'bold 11px Arial';
+         ctx.fillStyle = '#cc785c';
+         ctx.font = 'bold 11px Inter, sans-serif';
          ctx.textAlign = 'center';
          ctx.fillText('T', xTrig, gridTop + 12);
       }
@@ -397,6 +957,24 @@ function drawWaveform() {
    document.getElementById('trig').textContent = snapshot.triggered || 'no';
    document.getElementById('time').textContent = snapshot.timestamp || '-';
 
+   // Scope-card header
+   var sBoard = document.getElementById('scope-board');
+   var sFreq  = document.getElementById('scope-freq');
+   var sTc    = document.getElementById('scope-tc');
+   var sTrig  = document.getElementById('scope-trig');
+   if (sBoard) sBoard.textContent = snapshot.board || 0;
+   if (sFreq)  sFreq.textContent  = (snapshot.freq || 0).toFixed(2);
+   if (sTc)    sTc.textContent    = snapshot.trigger_cell || 0;
+   if (sTrig) {
+      var triggered = (snapshot.triggered === 'yes' || snapshot.triggered === true);
+      sTrig.textContent = triggered ? 'triggered' : 'not triggered';
+      sTrig.className = triggered ? 'scope-trig-on' : 'scope-trig-off';
+   }
+
+   // Header timestamp
+   var hdrTime = document.getElementById('hdr-time');
+   if (hdrTime && snapshot.timestamp) hdrTime.textContent = snapshot.timestamp;
+
    // Keep the trigger delay slider in sync with the current total_ns.
    var f = Number(snapshot.freq) || 5.0;
    if (f > 0) {
@@ -407,7 +985,7 @@ function drawWaveform() {
 
    // Time range
    var tMin = time[0], tMax = time[time.length-1];
-   document.getElementById('trange').textContent = tMin.toFixed(1) + ' - ' + tMax.toFixed(1) + ' ns';
+   document.getElementById('trange').textContent = tMin.toFixed(1) + ' – ' + tMax.toFixed(1) + ' ns';
 
    // Per-channel min/max
    for (var ch = 0; ch < 4; ch++) {
@@ -434,7 +1012,6 @@ function loadSnapshot() {
    };
    xhr.send();
 
-   // Trigger rates from ODB (per-channel + global hardware trigger + Acq/s)
    if (typeof mjsonrpc_call === 'function') {
       var paths = [
          '/Equipment/DRS4/Settings/TrgRate_B0_Acq',
@@ -473,13 +1050,11 @@ function loadSettings() {
          var v = rpc.result.data;
          if (!v || !v.length) return;
 
-         // Build cache of raw values for change-detection
          var newValues = {};
          for (var k = 0; k < SETTINGS_KEYS.length; k++) {
             newValues[SETTINGS_KEYS[k]] = String(v[k]);
          }
 
-         // Only update UI if ODB values actually differ
          var needsUpdate = false;
          for (var k = 0; k < SETTINGS_KEYS.length; k++) {
             if (_currentOdbValues[SETTINGS_KEYS[k]] !== newValues[SETTINGS_KEYS[k]]) {
@@ -491,7 +1066,6 @@ function loadSettings() {
 
          _currentOdbValues = newValues;
 
-         // Set guard so change handlers don't write back
          _loadingSettings = true;
 
          document.getElementById('TriggerMode').value = (v[0] === 'Normal') ? 'Normal' : 'Auto';
@@ -502,13 +1076,12 @@ function loadSettings() {
          document.getElementById('TriggerLevel_CH2').value = Number(v[5]) || 0;
          document.getElementById('TriggerLevel_CH3').value = Number(v[6]) || 0;
          document.getElementById('TriggerDelay').value = Number(v[7]) || 0;
-         document.getElementById('TriggerDelayVal').textContent = document.getElementById('TriggerDelay').value;
+         document.getElementById('TriggerDelayVal').textContent = document.getElementById('TriggerDelay').value + ' ns';
          document.getElementById('EnableCH1').checked = Boolean(v[8]);
          document.getElementById('EnableCH2').checked = Boolean(v[9]);
          document.getElementById('EnableCH3').checked = Boolean(v[10]);
          document.getElementById('EnableCH4').checked = Boolean(v[11]);
 
-         // Release guard after change events flush
          setTimeout(function() { _loadingSettings = false; }, 100);
       } catch(e) { console.log('loadSettings error:', e); }
    }).catch(function(err) { console.log('loadSettings RPC error:', err); });
@@ -522,7 +1095,9 @@ function saveSetting(key, value) {
    var path = SETTINGS_PREFIX + selectedBoard + '/' + key;
    mjsonrpc_call('db_paste', { paths: [path], values: [value] }).then(function(rpc) {
       var stat = (rpc.result && rpc.result.status) ? rpc.result.status[0] : -999;
-      document.getElementById('status').textContent = 'Save ' + key + '=' + value + ' status=' + stat;
+      var statusEl = document.getElementById('status');
+      statusEl.textContent = 'Saved ' + key + '=' + value;
+      statusEl.className = (stat === 1) ? 'live-ok' : 'live-err';
       if (stat === 1) {
          _currentOdbValues[key] = String(value);
       } else {
@@ -530,32 +1105,17 @@ function saveSetting(key, value) {
       }
    }).catch(function(err) {
       console.log('saveSetting error:', err);
-      document.getElementById('status').textContent = 'Save error: ' + err;
-   });
-}
-
-function startCalibration() {
-   if (typeof mjsonrpc_call !== 'function') return;
-   mjsonrpc_call('db_paste', {
-      paths: ['/Equipment/DRS4/Settings/DoCalibrate'],
-      values: [true]
-   }).then(function() {
-      document.getElementById('status').textContent = 'Calibrating...';
-   }).catch(function() {
-      document.getElementById('status').textContent = 'Calib error';
+      var statusEl = document.getElementById('status');
+      statusEl.textContent = 'Save error: ' + err;
+      statusEl.className = 'live-err';
    });
 }
 
 // ---- localStorage persistence ----
 function saveDisplaySettings() {
-   var settings = {
-      timeDiv: timeDiv,
-      voltDiv: voltDiv,
-      posOffset: posOffset
-   };
+   var settings = { timeDiv: timeDiv, voltDiv: voltDiv, posOffset: posOffset };
    try { localStorage.setItem('drs4_display', JSON.stringify(settings)); } catch(e) {}
 }
-
 function loadDisplaySettings() {
    try {
       var raw = localStorage.getItem('drs4_display');
@@ -567,7 +1127,6 @@ function loadDisplaySettings() {
       }
    } catch(e) {}
 }
-
 function applyDisplaySettings() {
    document.getElementById('TimeDiv').value = timeDiv;
    document.getElementById('VoltDiv').value = voltDiv;
@@ -581,17 +1140,14 @@ function applyDisplaySettings() {
 
 // ---- Event wiring ----
 function setup() {
-   // Restore persisted display settings
    loadDisplaySettings();
    applyDisplaySettings();
 
-   // Board selector
    document.getElementById('BoardSelect').addEventListener('change', function() {
       selectedBoard = parseInt(this.value);
       loadSettings();
    });
 
-   // Time/Div and V/div (display only, persist to localStorage)
    document.getElementById('TimeDiv').addEventListener('change', function() {
       timeDiv = parseInt(this.value);
       saveDisplaySettings();
@@ -603,22 +1159,16 @@ function setup() {
       drawWaveform();
    });
 
-   // Trigger Mode -> ODB
    document.getElementById('TriggerMode').addEventListener('change', function() {
       saveSetting('TriggerMode', this.value);
    });
-
-   // Trigger Logic -> ODB
    document.getElementById('TriggerLogic').addEventListener('change', function() {
       saveSetting('TriggerLogic', this.value);
    });
-
-   // Sampling Rate -> ODB
    document.getElementById('SamplingRate').addEventListener('change', function() {
       saveSetting('Sampling Rate (GHz)', parseFloat(this.value));
    });
 
-   // Trigger levels -> ODB
    var levelKeys = ['TriggerLevel_CH0 (V)','TriggerLevel_CH1 (V)',
                     'TriggerLevel_CH2 (V)','TriggerLevel_CH3 (V)'];
    for (var ch = 0; ch < 4; ch++) {
@@ -629,21 +1179,18 @@ function setup() {
       })(ch, levelKeys[ch]);
    }
 
-   // Trigger delay -> ODB. Use 'input' so the value text updates live as
-   // you drag; debounce the ODB write so we don't fire apply_board_config
-   // on every pixel of slider movement.
+   // Trigger delay slider
    var delayInput = document.getElementById('TriggerDelay');
    var delayVal = document.getElementById('TriggerDelayVal');
    var delaySaveTimer = null;
    delayInput.addEventListener('input', function() {
-      delayVal.textContent = this.value;
+      delayVal.textContent = this.value + ' ns';
       if (delaySaveTimer) clearTimeout(delaySaveTimer);
       delaySaveTimer = setTimeout(function() {
          saveSetting('TriggerDelayNs', parseInt(delayInput.value) || 0);
       }, 100);
    });
 
-   // EnableCH checkboxes -> ODB
    for (var ch = 1; ch <= 4; ch++) {
       (function(ch) {
          document.getElementById('EnableCH' + ch).addEventListener('change', function() {
@@ -652,7 +1199,6 @@ function setup() {
       })(ch);
    }
 
-   // Channel display visibility (no ODB, just controls drawing)
    for (var ch = 1; ch <= 4; ch++) {
       (function(ch) {
          var el = document.getElementById('ShowCH' + ch);
@@ -663,7 +1209,6 @@ function setup() {
       })(ch);
    }
 
-   // Channel vertical position (range slider + number input, synced)
    for (var ch = 1; ch <= 4; ch++) {
       (function(ch) {
          var slider = document.getElementById('PosCH' + ch);
@@ -684,10 +1229,6 @@ function setup() {
       })(ch);
    }
 
-   // Calibrate button
-   document.getElementById('calibrateBtn').addEventListener('click', startCalibration);
-
-   // Init mjsonrpc URL
    if (typeof mjsonrpc_set_url === 'function') {
       mjsonrpc_set_url(window.location.protocol + '//' + window.location.host);
    }
@@ -695,17 +1236,15 @@ function setup() {
 
 // ---- Initialize on load ----
 window.addEventListener('load', function() {
-   // Diagnostic: check if mjsonrpc is available
-   document.getElementById('status').textContent = 'mjsonrpc=' + (typeof mjsonrpc_call) + ' board=' + selectedBoard;
+   var statusEl = document.getElementById('status');
+   statusEl.textContent = 'mjsonrpc=' + (typeof mjsonrpc_call) + ' board=' + selectedBoard;
+   statusEl.className = '';
 
    setup();
    loadSettings();
-   loadSnapshot();  // first snapshot (calls drawWaveform internally)
+   loadSnapshot();
 
-   // Poll snapshot at ~10 Hz
    setInterval(loadSnapshot, 200);
-
-   // Poll ODB settings every 2s
    setInterval(loadSettings, 2000);
 });
 </script>
