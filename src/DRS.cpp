@@ -2094,13 +2094,6 @@ int DRSBoard::EnableTrigger(int flag1, int flag2)
 
    Write(T_CTRL, REG_CTRL, &fCtrlBits, 4);
 
-   // Verify
-   unsigned int ctrlReg = 0;
-   Read(T_CTRL, &ctrlReg, REG_CTRL, 4);
-   printf("[DRS4,DEBUG] EnableTrigger(flag1=%d,flag2=%d): wrote fCtrlBits=0x%x, readback=0x%x (TRG1=%d, TRG2=%d)\n",
-          flag1, flag2, fCtrlBits, ctrlReg,
-          (ctrlReg >> 22) & 1, (ctrlReg >> 31) & 1);
-
    return 1;
 }
 
@@ -2314,23 +2307,11 @@ int DRSBoard::SetTriggerSource(int source)
       // AND Bit8=CH1, Bit9=CH2, Bit10=CH3, Bit11=CH4, Bit12=EXT
       // TRANSP Bit15
       reg = (unsigned short) source;
-      printf("[DRS4,DEBUG] SetTriggerSource(board type=%d): writing 0x%x to REG_TRG_CONFIG\n", fBoardType, reg);
       Write(T_CTRL, REG_TRG_CONFIG, &reg, 2);
       // Verify by reading back
       unsigned short verify = 0;
       Read(T_CTRL, &verify, REG_TRG_CONFIG, 2);
-      printf("[DRS4,DEBUG] SetTriggerSource: verified readback=0x%x\n", verify);
    }
-
-   // Also read and print full control register for debugging
-   unsigned int ctrlReg = 0;
-   Read(T_CTRL, &ctrlReg, REG_CTRL, 4);
-   printf("[DRS4,DEBUG] SetTriggerSource: control register=0x%x (DMODE=%d, TRANSP=%d, TRG1=%d, TRG2=%d)\n",
-          ctrlReg,
-          (ctrlReg >> 17) & 1,
-          (ctrlReg >> 21) & 1,
-          (ctrlReg >> 22) & 1,
-          (ctrlReg >> 31) & 1);
 
    return 1;
 }

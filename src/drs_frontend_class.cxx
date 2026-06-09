@@ -953,6 +953,7 @@ INT DRS4Frontend::end_of_run()
 
 void DRS4Frontend::live_preview_loop()
 {
+   try {
    apply_all_configs();
 
    std::string prev_domino_mode;
@@ -1163,6 +1164,11 @@ void DRS4Frontend::live_preview_loop()
          usleep(1000);
       }
    }
+   } catch (std::exception &e) {
+      cm_msg(MERROR, "DRS4Frontend", "live_preview_loop exception: %s", e.what());
+   } catch (...) {
+      cm_msg(MERROR, "DRS4Frontend", "live_preview_loop unknown exception");
+   }
 }
 
 /*------------------------------------------------------------------*/
@@ -1308,6 +1314,7 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
  */
 void DRS4Frontend::readout_loop()
 {
+   try {
    const int header_size = 24;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + DRS4_NCHANNELS * ch_data_size;
@@ -1445,6 +1452,11 @@ void DRS4Frontend::readout_loop()
             do_snapshot();
          }
       }
+   }
+   } catch (std::exception &e) {
+      cm_msg(MERROR, "DRS4Frontend", "readout_loop exception: %s", e.what());
+   } catch (...) {
+      cm_msg(MERROR, "DRS4Frontend", "readout_loop unknown exception");
    }
 }
 
