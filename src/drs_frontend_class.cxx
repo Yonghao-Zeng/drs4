@@ -1312,6 +1312,13 @@ void DRS4Frontend::readout_loop()
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + DRS4_NCHANNELS * ch_data_size;
 
+   // Throttle web snapshot writes during a run.  The readout loop runs
+   // at the full domino rate (up to ~5 kHz at 5 GHz), and do_snapshot()
+   // writes a ~200 KB JSON file.  10 Hz is lively enough for the UI and
+   // keeps disk bandwidth reasonable.
+   constexpr int snapshot_interval_ms = 100;
+   auto last_snapshot = std::chrono::steady_clock::time_point{};
+
    while (!m_in_end_of_run) {
       for (int i = m_num_boards - 1; i >= 0; i--) {
          if (m_board_hw_connected[i]) {
@@ -1351,6 +1358,12 @@ void DRS4Frontend::readout_loop()
          }
          float freq = (float)m_boards[i]->GetTrueFrequency();
 
+         // Compute T-marker cell index once per board (independent of ch).
+         double total_ns = (double)DRS4_NSAMPLES / freq;
+         int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
+         if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
+         if (trig_tc < 0) trig_tc = 0;
+
          void *wp;
          INT rv = rb_get_wp(m_rb_handle, &wp, 1000);
          if (rv != SUCCESS) continue;
@@ -1365,8 +1378,7 @@ void DRS4Frontend::readout_loop()
          uint64_t tstamp_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
 
          memcpy(pbuf, &board_id, 4);
-         // trigger_cell written below after chronological reordering
-         memset(pbuf + 4, 0, 4);
+         memcpy(pbuf + 4, &trig_tc, 4);
          memcpy(pbuf + 8, &n_channels, 4);
          memcpy(pbuf + 12, &freq, 4);
          memcpy(pbuf + 16, &tstamp_us, 8);
@@ -1388,7 +1400,6 @@ void DRS4Frontend::readout_loop()
                float t_tmp[DRS4_NSAMPLES];
                memcpy(tmp, wave_array, sizeof(tmp));
                memcpy(t_tmp, time_array, sizeof(t_tmp));
-               double total_ns = (double)DRS4_NSAMPLES / freq;
                for (int s = 0; s < DRS4_NSAMPLES; s++) {
                   int src = (s + 1) % DRS4_NSAMPLES;
                   wave_array[s] = tmp[src];
@@ -1397,19 +1408,6 @@ void DRS4Frontend::readout_loop()
                   else
                      time_array[s] = (float)total_ns;
                }
-            }
-
-            // Store trigger position: index on the time axis corresponding
-            // to the user-set TriggerDelayNs. The actual signal rising
-            // edge sits at the same position because apply_board_config
-            // sets true_delay = total_ns - user_delay, so the rising
-            // edge lands at user_delay on the time axis.
-            {
-               double total_ns = (double)DRS4_NSAMPLES / freq;
-               int trig_tc = (int)(delay_ns * DRS4_NSAMPLES / total_ns + 0.5);
-               if (trig_tc >= DRS4_NSAMPLES) trig_tc = DRS4_NSAMPLES - 1;
-               if (trig_tc < 0) trig_tc = 0;
-               memcpy(pbuf + 4, &trig_tc, 4);
             }
 
             // Extrapolate first two samples to reduce readout ringing
@@ -1425,6 +1423,27 @@ void DRS4Frontend::readout_loop()
          }
 
          rb_increment_wp(m_rb_handle, event_size);
+
+         // Mirror the latest event into the web snapshot.  Throttled to
+         // 10 Hz so we don't drown the disk in JSON writes.
+         auto now = std::chrono::steady_clock::now();
+         auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_snapshot).count();
+         if (since_last >= snapshot_interval_ms) {
+            last_snapshot = now;
+            std::lock_guard<std::mutex> lock(m_snapshot_mutex);
+            m_snapshot_freq = freq;
+            m_snapshot_board = i;
+            for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
+               char *pch = pbuf + header_size + ch * ch_data_size;
+               memcpy(m_snapshot_time[ch], pch + 4,
+                      DRS4_NSAMPLES * sizeof(float));
+               memcpy(m_snapshot_wave[ch], pch + 4 + DRS4_NSAMPLES * sizeof(float),
+                      DRS4_NSAMPLES * sizeof(float));
+            }
+            m_snapshot_trigger_cell = trig_tc;
+            do_snapshot();
+         }
       }
    }
 }
