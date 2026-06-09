@@ -8,6 +8,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <sys/time.h>
 
 /*------------------------------------------------------------------*/
 
@@ -1299,10 +1300,27 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
 /*------------------------------------------------------------------*/
 /*  Readout loop (runs in separate thread)                          */
 /*------------------------------------------------------------------*/
-
+/*  Ring buffer layout per event (see fill_midas_banks for the MIDAS
+ *  bank format):
+ *
+ *    offset 0   uint32  board_id
+ *    offset 4   uint32  trigger_cell       (time-axis index of T marker)
+ *    offset 8   uint32  n_channels         (always DRS4_NCHANNELS = 4)
+ *    offset 12  float   freq               (true sampling freq, GHz)
+ *    offset 16  uint64  tstamp_us          (Unix time, microseconds)
+ *    offset 24  per-channel blocks:
+ *                uint32 channel_id (0..3)
+ *                float  time[1024]  (chronological, [0..total_ns])
+ *                float  wave[1024]  (mV, after offsetCalib+extrapolation)
+ *
+ *  Readout loop runs at full domino rate while m_run_active.  Boards
+ *  are daisy-chained so StartDomino on all boards is followed by a
+ *  wait on the first connected master, then each board's TransferWaves
+ *  runs as soon as that board's IsBusy clears.
+ */
 void DRS4Frontend::readout_loop()
 {
-   const int header_size = 16;
+   const int header_size = 24;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + DRS4_NCHANNELS * ch_data_size;
 
@@ -1354,11 +1372,16 @@ void DRS4Frontend::readout_loop()
          uint32_t board_id = (uint32_t)i;
          uint32_t n_channels = DRS4_NCHANNELS;
 
+         struct timeval tv;
+         gettimeofday(&tv, nullptr);
+         uint64_t tstamp_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+
          memcpy(pbuf, &board_id, 4);
          // trigger_cell written below after chronological reordering
          memset(pbuf + 4, 0, 4);
          memcpy(pbuf + 8, &n_channels, 4);
          memcpy(pbuf + 12, &freq, 4);
+         memcpy(pbuf + 16, &tstamp_us, 8);
 
          for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
             int drs_ch = ch * 2;
@@ -1436,7 +1459,22 @@ INT DRS4Frontend::is_data_available()
 /*------------------------------------------------------------------*/
 /*  Fill MIDAS banks from ring buffer                               */
 /*------------------------------------------------------------------*/
-
+/*  Drains one event from the ring buffer and emits it as a MIDAS
+ *  bank "DR<board_id>" (e.g. "DR00", "DR01", ...).  One call produces
+ *  one MIDAS event containing one DRS4 event from one board.  The
+ *  ring buffer layout written by readout_loop() is copied verbatim
+ *  into the bank:
+ *
+ *    uint32 board_id
+ *    uint32 trigger_cell
+ *    uint32 n_channels
+ *    float  freq
+ *    uint64 tstamp_us
+ *    per-channel: uint32 channel_id, float time[1024], float wave[1024]
+ *
+ *  Total payload = 24 + n_channels * (4 + 1024*4*2) bytes.
+ *  At DRS4_NCHANNELS=4 this is 32808 bytes per event.
+ */
 INT DRS4Frontend::fill_midas_banks(char *pevent)
 {
    if (m_rb_handle < 0) return 0;
@@ -1453,20 +1491,36 @@ INT DRS4Frontend::fill_midas_banks(char *pevent)
 
    uint32_t board_id, trigger_cell, n_channels;
    float freq;
-   memcpy(&board_id, pbuf, 4);
-   memcpy(&trigger_cell, pbuf + 4, 4);
-   memcpy(&n_channels, pbuf + 8, 4);
-   memcpy(&freq, pbuf + 12, 4);
+   memcpy(&board_id,     pbuf,      4);
+   memcpy(&trigger_cell, pbuf + 4,  4);
+   memcpy(&n_channels,   pbuf + 8,  4);
+   memcpy(&freq,         pbuf + 12, 4);
 
-   const int header_size = 16;
+   const int header_size = 24;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + n_channels * ch_data_size;
+   // Upper bound for a valid event: header + DRS4_NCHANNELS * channel block.
+   const int max_event_size = header_size + DRS4_NCHANNELS * ch_data_size;
+
+   // Sanity-check the event before writing it to MIDAS.  A corrupt ring
+   // buffer (e.g. from a crashed readout thread) could otherwise produce
+   // a garbage bank that downstream decoders have to handle.
+   if (board_id >= DRS4_MAX_BOARDS
+       || n_channels == 0 || n_channels > DRS4_NCHANNELS
+       || event_size > max_event_size) {
+      cm_msg(MERROR, "DRS4Frontend",
+             "fill_midas_banks: corrupt event board_id=%u n_ch=%u size=%d — dropping",
+             board_id, n_channels, event_size);
+      rb_increment_rp(m_rb_handle, event_size);
+      return 0;
+   }
 
    char bank_name[5];
    snprintf(bank_name, sizeof(bank_name), "DR%02d", board_id);
 
    char *pbk;
    bk_init32(pevent);
+   TRIGGER_MASK(pevent) = m_fe_index;   // tag event source
    bk_create(pevent, bank_name, TID_BYTE, (void **)&pbk);
 
    memcpy(pbk, pbuf, event_size);
