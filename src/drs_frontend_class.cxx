@@ -902,13 +902,17 @@ INT DRS4Frontend::begin_of_run(int run_number, char *error)
       m_boards[i]->StartDomino();
    }
 
+   // Signal the live_preview thread to exit BEFORE we join it, otherwise
+   // it has no way to learn that a run is starting and could be stuck
+   // mid-capture (TransferWaves + GetWave + GetTime), causing join() to
+   // block long enough that MIDAS times out the rc_transition RPC.
+   m_run_active = true;
+
    if (m_readout_thread) {
       m_readout_thread->join();
       delete m_readout_thread;
       m_readout_thread = nullptr;
    }
-
-   m_run_active = true;
 
    m_readout_thread = new std::thread(&DRS4Frontend::readout_loop, this);
 
@@ -1006,7 +1010,7 @@ void DRS4Frontend::live_preview_loop()
       m_trg_rate_ema[i] = 0;
    }
 
-   while (!m_in_end_of_run) {
+   while (!m_in_end_of_run && !m_run_active) {
       // Loop runs continuously (no gating) so captures happen as fast as
       // the hardware allows. Rate ODB updates are decoupled and run on
       // their own 1-second cadence below.
@@ -1135,22 +1139,14 @@ void DRS4Frontend::live_preview_loop()
                   // trigger stops it (IsBusy→0).  We wait for that.
 
                   if (!m_in_end_of_run && !m_run_active) {
-                     int prev_busy = m_boards[master]->IsBusy();
                      m_boards[master]->StartDomino();
                      // Wait for hardware trigger to stop the sweep
                      int trig_timeout = 10000;
-                     int triggered = 0;
                      while (m_boards[master]->IsBusy()
                             && !m_in_end_of_run && !m_run_active) {
                         usleep(100);
                         if (--trig_timeout <= 0) break;
                      }
-                     triggered = !m_boards[master]->IsBusy();
-                     static int dbg_count = 0;
-                     if (dbg_count++ < 10 || triggered)
-                        cm_msg(MINFO, "DRS4Frontend",
-                               "Normal trigger: prev_busy=%d started=1 final_busy=%d triggered=%d timeout=%d",
-                               prev_busy, m_boards[master]->IsBusy(), triggered, trig_timeout <= 0);
                      if (!m_boards[master]->IsBusy())
                         capture_and_snapshot(false);
                   }
@@ -1191,7 +1187,6 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
       // the sweep was already started and stopped by the hardware trigger
       // (or completed naturally if no trigger hit).
 
-      static int snap_cnt = 0;
       if (auto_mode) {
          // DominoMode=1 (continuous).  StartDomino keeps the domino
          // rolling.  SoftTrigger stops it and latches the current
@@ -1215,8 +1210,6 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
       int stop_cell = m_boards[i]->GetStopCell(0);
 
       float freq = (float)m_boards[i]->GetTrueFrequency();
-      bool vcal = m_boards[i]->IsVoltageCalibrationValid();
-      bool tcal = m_boards[i]->IsTimingCalibrationValid();
 
       // Get trigger delay setting from ODB
       int delay_ns = 0;
@@ -1225,11 +1218,6 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
          delay_ns = odb_get<int>(b, "TriggerDelayNs", 0);
          if (delay_ns < 0) delay_ns = 0;
       }
-
-      if (snap_cnt++ < 5 || snap_cnt % 100 == 0)
-         cm_msg(MINFO, "DRS4Frontend",
-                "Snapshot #%d: board=%d sc=%d freq=%.3f vcal=%d tcal=%d delay=%dns (auto=%d)",
-                snap_cnt, i, stop_cell, freq, vcal, tcal, delay_ns, auto_mode);
 
       // Count this capture for software-side Acq/s rate.
       m_event_cnt[i].fetch_add(1, std::memory_order_relaxed);
