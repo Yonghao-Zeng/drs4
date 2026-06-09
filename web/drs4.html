@@ -146,12 +146,6 @@
          color: var(--ink);
          margin: 0 0 var(--s-2) 0;
       }
-      .page-subtitle {
-         font-size: 16px;
-         color: var(--muted);
-         margin: 0 0 var(--s-6) 0;
-         max-width: 720px;
-      }
 
       /* ---------- Cards ---------- */
       .card {
@@ -160,6 +154,10 @@
          border-radius: var(--r-lg);
          padding: var(--s-5);
          margin-bottom: var(--s-4);
+         transition: border-color 0.18s ease, background 0.18s ease;
+      }
+      .card:hover {
+         border-color: var(--surface-strong);
       }
       .card-label {
          font-size: 12px;
@@ -511,7 +509,6 @@
          letter-spacing: -0.2px;
       }
       .info-item.info-accent .val { color: var(--primary); }
-      .info-item.info-strong .val { color: var(--ink); font-weight: 600; }
 
       /* Channel-ranges card: small chip-style */
       .ranges-card .info-item .val {
@@ -523,9 +520,82 @@
       /* Hide legacy section-label that the old CSS used */
       .section-label { display: none; }
 
-      /* Status pill colors used by saveSetting()'s inline write to #status */
-      #status.live-ok { color: var(--success); }
-      #status.live-err { color: var(--error); }
+      /* ---------- Scope pause button + banner ---------- */
+      .scope-pause-btn {
+         appearance: none;
+         -webkit-appearance: none;
+         background: var(--surface-dark-elev);
+         color: var(--on-dark);
+         border: 1px solid var(--surface-dark-soft);
+         border-radius: var(--r-md);
+         padding: 6px 14px;
+         font-family: inherit;
+         font-size: 13px;
+         font-weight: 500;
+         line-height: 1;
+         cursor: pointer;
+         display: inline-flex;
+         align-items: center;
+         gap: 6px;
+         transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      .scope-pause-btn:hover { background: #2f2c28; border-color: #3a3630; }
+      .scope-pause-btn.is-paused { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+      .scope-paused-banner {
+         position: absolute;
+         top: 14px;
+         left: 50%;
+         transform: translateX(-50%);
+         padding: 4px 12px;
+         background: var(--primary);
+         color: var(--on-primary);
+         font-size: 11px;
+         font-weight: 600;
+         letter-spacing: 1.5px;
+         border-radius: var(--r-pill);
+         z-index: 2;
+         box-shadow: 0 2px 6px rgba(20,20,19,0.25);
+      }
+      .scope-frame { position: relative; }
+
+      /* ---------- Save toast ---------- */
+      .toast {
+         position: fixed;
+         top: 80px;
+         right: 24px;
+         padding: 10px 18px;
+         background: var(--surface-dark);
+         color: var(--on-dark);
+         border-radius: var(--r-pill);
+         font-size: 13px;
+         font-weight: 500;
+         line-height: 1.2;
+         box-shadow: 0 4px 16px rgba(20,20,19,0.18);
+         opacity: 0;
+         transform: translateY(-8px);
+         transition: opacity 0.18s ease, transform 0.18s ease;
+         pointer-events: none;
+         z-index: 200;
+         max-width: 360px;
+         overflow: hidden;
+         text-overflow: ellipsis;
+         white-space: nowrap;
+         display: flex;
+         align-items: center;
+         gap: 8px;
+      }
+      .toast.visible { opacity: 1; transform: translateY(0); }
+      .toast.toast-ok  { background: var(--success); color: white; }
+      .toast.toast-err { background: var(--error);   color: white; }
+      .toast::before {
+         content: "";
+         display: inline-block;
+         width: 6px; height: 6px;
+         border-radius: 50%;
+         background: currentColor;
+         opacity: 0.85;
+         flex-shrink: 0;
+      }
    </style>
 </head>
 <body>
@@ -547,10 +617,11 @@
    </div>
 </header>
 
+<div id="saveToast" class="toast" aria-live="polite"></div>
+
 <div class="app">
 
    <h1 class="page-title">Waveform capture &amp; trigger control</h1>
-   <p class="page-subtitle">Live preview of DRS4 board waveforms. Adjust sampling rate, trigger levels, and channel offsets; trigger calibration runs from the ODB settings panel.</p>
 
    <!-- Acquisition + Display -->
    <section class="card">
@@ -735,10 +806,14 @@
             <span><span id="scope-freq">—</span> GHz</span>
             <span>TC <span class="scope-tc" id="scope-tc">—</span></span>
             <span id="scope-trig" class="scope-trig-off">not triggered</span>
+            <button id="pauseBtn" class="scope-pause-btn" type="button" title="Freeze the live waveform to inspect it">
+               <span id="pauseIcon">⏸</span> <span id="pauseLabel">Pause</span>
+            </button>
          </div>
       </div>
       <div class="scope-frame">
          <canvas id="scope" width="1100" height="500"></canvas>
+         <div id="scopePaused" class="scope-paused-banner" hidden>PAUSED</div>
       </div>
    </section>
 
@@ -746,7 +821,6 @@
    <section class="info-card">
       <h2 class="card-label">Status</h2>
       <div class="info-grid">
-         <div class="info-item info-strong"><span class="lbl">Save Status</span><span class="val" id="status">—</span></div>
          <div class="info-item"><span class="lbl">Board</span><span class="val" id="board">—</span></div>
          <div class="info-item"><span class="lbl">True Freq</span><span class="val" id="freq">—</span></div>
          <div class="info-item"><span class="lbl">Time Range</span><span class="val" id="trange">—</span></div>
@@ -1088,26 +1162,36 @@ function loadSettings() {
 }
 
 // ---- Save single setting to ODB ----
+var _toastTimer = null;
+function showToast(message, kind) {
+   var toast = document.getElementById('saveToast');
+   if (!toast) return;
+   toast.textContent = message;
+   toast.className = 'toast visible toast-' + (kind || 'ok');
+   if (_toastTimer) clearTimeout(_toastTimer);
+   _toastTimer = setTimeout(function() { toast.className = 'toast'; }, 2400);
+}
+
 function saveSetting(key, value) {
    if (_loadingSettings) return;
-   if (typeof mjsonrpc_call !== 'function') return;
+   if (typeof mjsonrpc_call !== 'function') {
+      showToast('RPC unavailable — change not saved', 'err');
+      return;
+   }
 
    var path = SETTINGS_PREFIX + selectedBoard + '/' + key;
    mjsonrpc_call('db_paste', { paths: [path], values: [value] }).then(function(rpc) {
       var stat = (rpc.result && rpc.result.status) ? rpc.result.status[0] : -999;
-      var statusEl = document.getElementById('status');
-      statusEl.textContent = 'Saved ' + key + '=' + value;
-      statusEl.className = (stat === 1) ? 'live-ok' : 'live-err';
       if (stat === 1) {
          _currentOdbValues[key] = String(value);
+         showToast('Saved ' + key + ' = ' + value, 'ok');
       } else {
          console.log('saveSetting FAILED:', key, '=', value, 'status=', stat, 'rpc=', JSON.stringify(rpc));
+         showToast('Save failed: ' + key, 'err');
       }
    }).catch(function(err) {
       console.log('saveSetting error:', err);
-      var statusEl = document.getElementById('status');
-      statusEl.textContent = 'Save error: ' + err;
-      statusEl.className = 'live-err';
+      showToast('Save error: ' + err, 'err');
    });
 }
 
@@ -1234,17 +1318,34 @@ function setup() {
    }
 }
 
+// ---- Pause toggle ----
+var _snapshotPaused = false;
+function setPaused(p) {
+   _snapshotPaused = p;
+   var btn = document.getElementById('pauseBtn');
+   var icon = document.getElementById('pauseIcon');
+   var label = document.getElementById('pauseLabel');
+   var banner = document.getElementById('scopePaused');
+   if (btn)   btn.classList.toggle('is-paused', p);
+   if (icon)  icon.textContent = p ? '▶' : '⏸';
+   if (label) label.textContent = p ? 'Resume' : 'Pause';
+   if (banner) banner.hidden = !p;
+}
+
 // ---- Initialize on load ----
 window.addEventListener('load', function() {
-   var statusEl = document.getElementById('status');
-   statusEl.textContent = 'mjsonrpc=' + (typeof mjsonrpc_call) + ' board=' + selectedBoard;
-   statusEl.className = '';
+   // Pause button wiring
+   var pauseBtn = document.getElementById('pauseBtn');
+   if (pauseBtn) {
+      pauseBtn.addEventListener('click', function() { setPaused(!_snapshotPaused); });
+   }
+   setPaused(false);
 
    setup();
    loadSettings();
    loadSnapshot();
 
-   setInterval(loadSnapshot, 200);
+   setInterval(function() { if (!_snapshotPaused) loadSnapshot(); }, 200);
    setInterval(loadSettings, 2000);
 });
 </script>
