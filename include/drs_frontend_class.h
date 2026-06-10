@@ -66,6 +66,7 @@ private:
    // Waveform snapshot for web display
    std::mutex m_snapshot_mutex;
    std::atomic<bool> m_snapshot_wanted{false};
+   std::string m_snapshot_path;     // fixed at init; do_snapshot() must not touch m_settings
    float m_snapshot_time[DRS4_NCHANNELS][DRS4_NSAMPLES]{};
    float m_snapshot_wave[DRS4_NCHANNELS][DRS4_NSAMPLES]{};
    int m_snapshot_trigger_cell{0};   // time-axis index of T marker (= user_delay * 1024 / total_ns)
@@ -111,6 +112,7 @@ private:
    void readout_loop();
    void live_preview_loop();
    void capture_and_snapshot(bool auto_mode);
+   void update_trigger_rates();
 
    // ODB helpers
    template<typename T>

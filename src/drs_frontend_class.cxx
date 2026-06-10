@@ -63,7 +63,7 @@ void DRS4Frontend::create_board_defaults(int board_index)
       {"SerialNumber",      0},
       {"BoardType",         0},
       {"Connect",           true},
-      {"Sampling Rate (GHz)",   5.0},
+      {"Sampling Rate (GHz)",   0.7},
       {"InputRange",        std::string("-0.5V to +0.5V")},
       {"Options InputRange", std::array<std::string, 2>{"-0.5V to +0.5V", "0V to +1V"}},
       {"TriggerLogic",      std::string("OR")},
@@ -405,7 +405,7 @@ void DRS4Frontend::apply_board_config(int i)
       // Sampling Rate FIRST — SetFrequency internally starts domino,
       // waits for PLL lock, then calls SoftTrigger. Do NOT call
       // StartDomino() again until after SoftTrigger in the capture flow.
-      double freq = odb_get<double>(b, "Sampling Rate (GHz)", 5.0);
+      double freq = odb_get<double>(b, "Sampling Rate (GHz)", 0.7);
       m_boards[i]->SetFrequency(freq, true);
 
       // DominoMode=1 (continuous) for live preview.  Must be set AFTER
@@ -728,16 +728,15 @@ void DRS4Frontend::setup_watches()
 
 void DRS4Frontend::create_snapshot_odb()
 {
+   m_snapshot_path = "/home/muon/midasExp/drs4/web/drs4_snapshot.json";
    m_settings["SnapshotWaveform"] = false;
    m_settings["SnapshotBoard"] = 0;
    m_settings["SnapshotReady"] = false;
-   m_settings["SnapshotPath"] = std::string("/home/muon/midasExp/drs4/web/drs4_snapshot.json");
+   m_settings["SnapshotPath"] = m_snapshot_path;
 }
 
 void DRS4Frontend::do_snapshot()
 {
-   std::string snapPath = m_settings["SnapshotPath"];
-
    // Get current timestamp for debugging
    time_t now = time(NULL);
    struct tm tbuf;
@@ -770,7 +769,7 @@ void DRS4Frontend::do_snapshot()
    }
    json += "]}";
 
-   FILE *f = fopen(snapPath.c_str(), "w");
+   FILE *f = fopen(m_snapshot_path.c_str(), "w");
    if (f) {
       fprintf(f, "%s", json.c_str());
       fclose(f);
@@ -870,6 +869,45 @@ INT DRS4Frontend::init(const char *eq_name, const char *eq_filename, int index)
 /*  Begin of run                                                    */
 /*------------------------------------------------------------------*/
 
+void DRS4Frontend::update_trigger_rates()
+{
+   // 1-second cadence for the Acq/s average.  Per-channel scalers and the
+   // global hardware trigger rate are refreshed on every call.
+   auto now = std::chrono::system_clock::now();
+   double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
+   if (m_prev_time <= 0) m_prev_time = now_s;
+   double dt = now_s - m_prev_time;
+   bool rate_tick = (dt >= 1.0);
+   if (rate_tick) m_prev_time = now_s;
+
+   for (int i = 0; i < m_num_boards; i++) {
+      if (!m_board_hw_connected[i]) continue;
+      char key[64];
+      for (int c = 0; c < 4; c++) {
+         unsigned int s = m_boards[i]->GetScaler(c);
+         snprintf(key, sizeof(key), "TrgRate_B%d_CH%d", i, c+1);
+         try { m_settings[key] = (float)s; } catch (...) {}
+      }
+      unsigned int s4 = m_boards[i]->GetScaler(4);
+      snprintf(key, sizeof(key), "TrgRate_B%d", i);
+      try { m_settings[key] = (float)s4; } catch (...) {}
+
+      if (rate_tick) {
+         uint64_t cur_cnt = m_event_cnt[i].load(std::memory_order_relaxed);
+         uint64_t delta = (m_prev_event_cnt[i] <= cur_cnt)
+                            ? (cur_cnt - m_prev_event_cnt[i]) : 0;
+         double acq_rate = (dt > 0) ? (double)delta / dt : 0.0;
+         m_prev_event_cnt[i] = cur_cnt;
+         snprintf(key, sizeof(key), "TrgRate_B%d_Acq", i);
+         try { m_settings[key] = (float)acq_rate; } catch (...) {}
+      }
+   }
+}
+
+/*------------------------------------------------------------------*/
+/*  Begin of run                                                    */
+/*------------------------------------------------------------------*/
+
 INT DRS4Frontend::begin_of_run(int run_number, char *error)
 {
    m_in_end_of_run = false;
@@ -956,6 +994,8 @@ void DRS4Frontend::live_preview_loop()
    try {
    apply_all_configs();
 
+   // Rate update is shared with readout_loop; see update_trigger_rates().
+
    std::string prev_domino_mode;
    std::string prev_trig_logic;
    bool prev_enable_ch[4] = {true, true, true, true};
@@ -1012,48 +1052,10 @@ void DRS4Frontend::live_preview_loop()
    }
 
    while (!m_in_end_of_run && !m_run_active) {
-      // Loop runs continuously (no gating) so captures happen as fast as
-      // the hardware allows. Rate ODB updates are decoupled and run on
-      // their own 1-second cadence below.
-      auto now = std::chrono::system_clock::now();
-      double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
-      if (m_prev_time <= 0) {
-         m_prev_time = now_s;
-      }
-      double dt = now_s - m_prev_time;
-      bool rate_tick = (dt >= 1.0);
-      if (rate_tick) {
-         m_prev_time = now_s;
-      }
-      for (int i = 0; i < m_num_boards; i++) {
-         if (!m_board_hw_connected[i]) continue;
-         // Per-channel rates (ch0..3) and global hardware trigger rate (ch4).
-         // No EMA smoothing — display the raw GetScaler() value to match
-         // the official DRS4 software exactly.
-         char key[64];
-         for (int c = 0; c < 4; c++) {
-            unsigned int s = m_boards[i]->GetScaler(c);
-            snprintf(key, sizeof(key), "TrgRate_B%d_CH%d", i, c+1);
-            try { m_settings[key] = (float)s; } catch (...) {}
-         }
-         unsigned int s4 = m_boards[i]->GetScaler(4);
-         snprintf(key, sizeof(key), "TrgRate_B%d", i);
-         try { m_settings[key] = (float)s4; } catch (...) {}
-
-         // Software-side Acq/s rate: count of successful captures / dt.
-         // This matches the official DRS4 software's "Acq/s" display.
-         // Only computed/updated on the 1s rate-tick to get a meaningful
-         // average rate (otherwise we'd just see 0.0 every loop iteration).
-         if (rate_tick) {
-            uint64_t cur_cnt = m_event_cnt[i].load(std::memory_order_relaxed);
-            uint64_t delta = (m_prev_event_cnt[i] <= cur_cnt)
-                               ? (cur_cnt - m_prev_event_cnt[i]) : 0;
-            double acq_rate = (dt > 0) ? (double)delta / dt : 0.0;
-            m_prev_event_cnt[i] = cur_cnt;
-            snprintf(key, sizeof(key), "TrgRate_B%d_Acq", i);
-            try { m_settings[key] = (float)acq_rate; } catch (...) {}
-         }
-      }
+      // Trigger rates are read on every loop iteration; live_preview AND
+      // readout_loop both call update_trigger_rates() so the ODB stays
+      // fresh during a run too.
+      update_trigger_rates();
 
       if (!m_run_active) {
          bool any_board = false;
@@ -1327,6 +1329,19 @@ void DRS4Frontend::readout_loop()
    auto last_snapshot = std::chrono::steady_clock::time_point{};
 
    while (!m_in_end_of_run) {
+      // Keep the trigger-rate ODB vars fresh during a run so the web
+      // Status panel doesn't freeze.  Throttled to ~5 Hz — GetScaler is a
+      // USB read but cheap; doing it more often just thrashes ODB writes.
+      {
+         static auto last_rate_update = std::chrono::steady_clock::time_point{};
+         auto now = std::chrono::steady_clock::now();
+         if (std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - last_rate_update).count() >= 200) {
+            last_rate_update = now;
+            update_trigger_rates();
+         }
+      }
+
       for (int i = m_num_boards - 1; i >= 0; i--) {
          if (m_board_hw_connected[i]) {
             m_boards[i]->StartDomino();
@@ -1430,6 +1445,10 @@ void DRS4Frontend::readout_loop()
          }
 
          rb_increment_wp(m_rb_handle, event_size);
+
+         // Count this successful capture so update_trigger_rates() can
+         // compute Acq/s during a run (capture_and_snapshot isn't called).
+         m_event_cnt[i].fetch_add(1, std::memory_order_relaxed);
 
          // Mirror the latest event into the web snapshot.  Throttled to
          // 10 Hz so we don't drown the disk in JSON writes.
