@@ -678,7 +678,7 @@
    <!-- Trigger -->
    <section class="card">
       <h2 class="card-label">Trigger</h2>
-      <p class="card-helper">Per-channel enable (ODB <code style="font-family:JetBrains Mono,monospace;font-size:12px;">EnableCHn</code>), trigger level in volts, and the post-trigger delay slider. The marker on the scope tracks the rising edge.</p>
+      <p class="card-helper">Per-channel enable (ODB <code style="font-family:JetBrains Mono,monospace;font-size:12px;">EnableCHn</code>), trigger level in volts, and the post-trigger delay slider. The marker on the scope tracks the rising edge. Use <code style="font-family:JetBrains Mono,monospace;font-size:12px;">EnableEXT</code> to trigger off the front-panel LEMO input instead of (or in addition to) the channels.</p>
       <div class="trigger-row">
          <div class="trigger-channel">
             <div class="trigger-channel-head">
@@ -722,6 +722,16 @@
                <span class="field-label">Level</span>
                <input type="number" id="TriggerLevel_CH3" value="0.05" step="0.01" min="-0.5" max="0.5">
                <span class="field-label" style="color:var(--muted-soft)">V</span>
+            </div>
+         </div>
+         <div class="trigger-channel trigger-channel-ext">
+            <div class="trigger-channel-head">
+               <span class="trigger-channel-name"><span class="trigger-channel-dot" style="background:#a0a0a0"></span>EXT</span>
+               <input type="checkbox" id="EnableEXT" title="Enable external (LEMO) trigger">
+            </div>
+            <div class="trigger-channel-level" style="visibility:hidden">
+               <span class="field-label">Level</span>
+               <input type="number" value="0" disabled>
             </div>
          </div>
       </div>
@@ -872,7 +882,8 @@ var SETTINGS_KEYS = [
    'TriggerLevel_CH0 (V)', 'TriggerLevel_CH1 (V)',
    'TriggerLevel_CH2 (V)', 'TriggerLevel_CH3 (V)',
    'TriggerDelayNs',
-   'EnableCH1', 'EnableCH2', 'EnableCH3', 'EnableCH4'
+   'EnableCH1', 'EnableCH2', 'EnableCH3', 'EnableCH4',
+   'EnableEXT'
 ];
 var SETTINGS_PREFIX = '/Equipment/DRS4/Settings/Boards/Board';
 
@@ -1144,6 +1155,7 @@ function loadSettings() {
          document.getElementById('EnableCH2').checked = Boolean(v[8]);
          document.getElementById('EnableCH3').checked = Boolean(v[9]);
          document.getElementById('EnableCH4').checked = Boolean(v[10]);
+         document.getElementById('EnableEXT').checked = Boolean(v[11]);
 
          setTimeout(function() { _loadingSettings = false; }, 100);
       } catch(e) { console.log('loadSettings error:', e); }
@@ -1268,6 +1280,10 @@ function setup() {
          });
       })(ch);
    }
+
+   document.getElementById('EnableEXT').addEventListener('change', function() {
+      saveSetting('EnableEXT', this.checked);
+   });
 
    for (var ch = 1; ch <= 4; ch++) {
       (function(ch) {

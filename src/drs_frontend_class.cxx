@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <cmath>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cerrno>
 
 /*------------------------------------------------------------------*/
 
@@ -72,6 +76,7 @@ void DRS4Frontend::create_board_defaults(int board_index)
       {"EnableCH2",         true},
       {"EnableCH3",         true},
       {"EnableCH4",         true},
+      {"EnableEXT",         false},
       {"TriggerLevel_CH0 (V)", 0.05},
       {"TriggerLevel_CH1 (V)", 0.05},
       {"TriggerLevel_CH2 (V)", 0.05},
@@ -389,6 +394,14 @@ void DRS4Frontend::apply_board_config(int i)
          trig_logic_direct = std::string("EXCEPTION: ") + e.what();
       }
 
+      // External (LEMO) trigger enable. Per the DRS4 trigger-config
+      // register layout (DRS.cpp:2304), the EXT bit sits at bit 4 in the
+      // OR path and bit 12 in the AND path. Setting it ORs the external
+      // trigger into the trigger source mask alongside the channel bits.
+      // Typical use is one or the other (channel triggers vs. external),
+      // not both, but the hardware supports mixing.
+      bool enable_ext = odb_get<bool>(b, "EnableEXT", false);
+
       unsigned int src_mask = 0;
       int bit_offset = (trig_logic == "AND") ? 8 : 0;  // OR=bits 0-3, AND=bits 8-11
       for (int ch = 0; ch < 4; ch++) {
@@ -396,8 +409,12 @@ void DRS4Frontend::apply_board_config(int i)
             src_mask |= (1 << (ch + bit_offset));
          }
       }
-      cm_msg(MINFO, "DRS4Frontend", "apply_board_config[%d]: trig_logic='%s' direct='%s' -> bit_offset=%d -> src_mask=0x%04x",
-             i, trig_logic.c_str(), trig_logic_direct.c_str(), bit_offset, src_mask);
+      if (enable_ext) {
+         src_mask |= (1 << (4 + bit_offset));  // bit 4 (OR) or bit 12 (AND)
+      }
+      cm_msg(MINFO, "DRS4Frontend", "apply_board_config[%d]: trig_logic='%s' direct='%s' ext=%s -> bit_offset=%d -> src_mask=0x%04x",
+             i, trig_logic.c_str(), trig_logic_direct.c_str(), enable_ext ? "on" : "off",
+             bit_offset, src_mask);
       m_boards[i]->SetTriggerSource(src_mask);
 
       // ---- REG_CONFIG, REG_TRG_DELAY, DAC levels ----
@@ -712,6 +729,7 @@ void DRS4Frontend::setup_watches()
       b["EnableCH2"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["EnableCH3"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["EnableCH4"].watch([this, i](midas::odb &key) { apply_board_config(i); });
+      b["EnableEXT"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["TriggerLogic"].watch([this, i](midas::odb &key) { apply_board_config(i); });
       b["InputRange"].watch([this, i](midas::odb &key) { apply_board_config(i); });
    }
@@ -769,10 +787,50 @@ void DRS4Frontend::do_snapshot()
    }
    json += "]}";
 
-   FILE *f = fopen(m_snapshot_path.c_str(), "w");
-   if (f) {
-      fprintf(f, "%s", json.c_str());
-      fclose(f);
+   // Atomic write: dump JSON to a sibling .tmp file, fsync it, then
+   // rename(2) it over the live path. rename() is atomic on POSIX, so
+   // mhttpd always reads either the previous complete snapshot or the
+   // new one — never a half-truncated/half-written file. (Symptom this
+   // fixes: "Cannot read file 'drs4_snapshot.json', read of N returned
+   // M < N" from mhttpd when the frontend rewrites mid-fetch.)
+   std::string tmp_path = m_snapshot_path + ".tmp";
+
+   int fd = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+   if (fd < 0) {
+      cm_msg(MERROR, "DRS4Frontend", "do_snapshot: open(%s) failed: %s",
+             tmp_path.c_str(), strerror(errno));
+      return;
+   }
+
+   const char *buf = json.c_str();
+   size_t remaining = json.size();
+   bool write_ok = true;
+   while (remaining > 0) {
+      ssize_t n = ::write(fd, buf, remaining);
+      if (n < 0) {
+         if (errno == EINTR) continue;
+         cm_msg(MERROR, "DRS4Frontend", "do_snapshot: write failed: %s",
+                strerror(errno));
+         write_ok = false;
+         break;
+      }
+      buf += n;
+      remaining -= (size_t)n;
+   }
+   if (write_ok) {
+      // fsync the file's data and the directory so the rename is durable.
+      ::fsync(fd);
+   }
+   ::close(fd);
+
+   if (write_ok) {
+      if (::rename(tmp_path.c_str(), m_snapshot_path.c_str()) != 0) {
+         cm_msg(MERROR, "DRS4Frontend", "do_snapshot: rename(%s -> %s) failed: %s",
+                tmp_path.c_str(), m_snapshot_path.c_str(), strerror(errno));
+         ::unlink(tmp_path.c_str());
+      }
+   } else {
+      ::unlink(tmp_path.c_str());
    }
 
    try {
@@ -1304,7 +1362,9 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
  *    offset 8   uint32  n_channels         (always DRS4_NCHANNELS = 4)
  *    offset 12  float   freq               (true sampling freq, GHz)
  *    offset 16  uint64  tstamp_us          (Unix time, microseconds)
- *    offset 24  per-channel blocks:
+ *    offset 24  uint32  user_delay_ns      (UI value of TriggerDelayNs)
+ *    offset 28  uint32  scaler[4]          (per-channel hardware trigger counts)
+ *    offset 44  per-channel blocks:
  *                uint32 channel_id (0..3)
  *                float  time[1024]  (chronological, [0..total_ns])
  *                float  wave[1024]  (mV, after offsetCalib+extrapolation)
@@ -1317,7 +1377,7 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
 void DRS4Frontend::readout_loop()
 {
    try {
-   const int header_size = 24;
+   const int header_size = 44;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + DRS4_NCHANNELS * ch_data_size;
 
@@ -1399,11 +1459,21 @@ void DRS4Frontend::readout_loop()
          gettimeofday(&tv, nullptr);
          uint64_t tstamp_us = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
 
-         memcpy(pbuf, &board_id, 4);
-         memcpy(pbuf + 4, &trig_tc, 4);
-         memcpy(pbuf + 8, &n_channels, 4);
-         memcpy(pbuf + 12, &freq, 4);
-         memcpy(pbuf + 16, &tstamp_us, 8);
+         // Snapshot the per-channel hardware trigger counts at this capture.
+         // These are monotonic since the last reset, so the per-event value
+         // is the cumulative count at the moment the trigger fired.
+         uint32_t scaler[DRS4_NCHANNELS];
+         for (int c = 0; c < DRS4_NCHANNELS; c++) {
+            scaler[c] = m_boards[i]->GetScaler(c);
+         }
+
+         memcpy(pbuf,      &board_id,        4);
+         memcpy(pbuf +  4, &trig_tc,         4);
+         memcpy(pbuf +  8, &n_channels,     4);
+         memcpy(pbuf + 12, &freq,            4);
+         memcpy(pbuf + 16, &tstamp_us,      8);
+         memcpy(pbuf + 24, &delay_ns,        4);
+         memcpy(pbuf + 28, scaler,           4 * sizeof(uint32_t));
 
          for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
             int drs_ch = ch * 2;
@@ -1508,10 +1578,12 @@ INT DRS4Frontend::is_data_available()
  *    uint32 n_channels
  *    float  freq
  *    uint64 tstamp_us
+ *    uint32 user_delay_ns
+ *    uint32 scaler[4]           (per-channel hardware trigger counts)
  *    per-channel: uint32 channel_id, float time[1024], float wave[1024]
  *
- *  Total payload = 24 + n_channels * (4 + 1024*4*2) bytes.
- *  At DRS4_NCHANNELS=4 this is 32808 bytes per event.
+ *  Total payload = 44 + n_channels * (4 + 1024*4*2) bytes.
+ *  At DRS4_NCHANNELS=4 this is 32828 bytes per event.
  */
 INT DRS4Frontend::fill_midas_banks(char *pevent)
 {
@@ -1534,7 +1606,7 @@ INT DRS4Frontend::fill_midas_banks(char *pevent)
    memcpy(&n_channels,   pbuf + 8,  4);
    memcpy(&freq,         pbuf + 12, 4);
 
-   const int header_size = 24;
+   const int header_size = 44;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + n_channels * ch_data_size;
    // Upper bound for a valid event: header + DRS4_NCHANNELS * channel block.
