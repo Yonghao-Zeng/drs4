@@ -3,13 +3,15 @@
 Convert a DRS4 MIDAS .mid.lz4 file to a ROOT file with one tree:
 
   - t_wave: one entry per (board, channel) per DRS4 event. Branches:
-        brd         (int32)   board index (0..N-1)
-        tstamp_us   (int64)   Unix timestamp of the event, microseconds
-        freq        (float)   true sampling frequency (GHz)
-        trigger_cell(int32)   T-marker position on the time axis
-        channel     (int32)   physical channel (0..3)
-        time[1024]  (float32) chronological time array, [0, total_ns] ns
-        wave[1024]  (float32) waveform in mV, offsetCalib + extrapolated
+        brd           (int32)   board index (0..N-1)
+        tstamp_us     (int64)   Unix timestamp of the event, microseconds
+        freq          (float)   true sampling frequency (GHz)
+        trigger_cell  (int32)   T-marker position on the time axis
+        user_delay_ns (int32)   UI value of TriggerDelayNs
+        channel       (int32)   physical channel (0..3)
+        scaler[4]     (uint32)  per-channel hardware trigger counts at capture
+        time[1024]    (float32) chronological time array, [0, total_ns] ns
+        wave[1024]    (float32) waveform in mV, offsetCalib + extrapolated
 
 The DR<NN> bank payload is the same one written by DRS4Frontend::
 fill_midas_banks() in src/drs_frontend_class.cxx (line 1516) and copied
@@ -142,35 +144,55 @@ def parse_banks(event_data):
 def decode_drs4(bdata):
     """Decode a DR<NN> bank into per-channel arrays.
 
-    Layout (matches drs_frontend_class.cxx readout_loop + fill_midas_banks):
+    Current layout (matches drs_frontend_class.cxx readout_loop +
+    fill_midas_banks, 44-byte header):
 
         uint32  board_id
         uint32  trigger_cell       (T-marker position on the time axis)
         uint32  n_channels
         float   freq               (GHz)
         uint64  tstamp_us          (Unix time, microseconds)
+        uint32  user_delay_ns      (UI value of TriggerDelayNs)
+        uint32  scaler[4]          (per-channel hardware trigger counts)
         per channel:
             uint32  channel_id
             float   time[1024]
             float   wave[1024]
+
+    The pre-0b110 layout used a 24-byte header (no user_delay_ns, no
+    scaler). decode_drs4() falls back to that layout if the buffer is
+    too short for the current one, populating the missing fields with
+    zeros, so old .mid.lz4 files still decode.
     """
     if len(bdata) < 24:
         return None
 
+    ch_data_size = 4 + DRS4_NSAMPLES * 4 * 2
     board_id     = struct.unpack_from('<I', bdata,  0)[0]
     trigger_cell = struct.unpack_from('<I', bdata,  4)[0]
     n_channels   = struct.unpack_from('<I', bdata,  8)[0]
     freq         = struct.unpack_from('<f', bdata, 12)[0]
     tstamp_us    = struct.unpack_from('<Q', bdata, 16)[0]
 
-    ch_data_size = 4 + DRS4_NSAMPLES * 4 * 2
-    expected = 24 + n_channels * ch_data_size
-    if len(bdata) < expected or n_channels == 0 or n_channels > DRS4_NCHANNELS:
+    if n_channels == 0 or n_channels > DRS4_NCHANNELS:
+        return None
+
+    if len(bdata) >= 44 + n_channels * ch_data_size:
+        # Current layout: 44-byte header includes user_delay_ns + scaler[4].
+        user_delay_ns = struct.unpack_from('<I', bdata, 24)[0]
+        scaler = list(struct.unpack_from('<4I', bdata, 28))
+        ch_offset = 44
+    elif len(bdata) >= 24 + n_channels * ch_data_size:
+        # Legacy layout: 24-byte header, no per-event trigger metadata.
+        user_delay_ns = 0
+        scaler = [0, 0, 0, 0]
+        ch_offset = 24
+    else:
         return None
 
     channels = []
     for ch in range(n_channels):
-        base = 24 + ch * ch_data_size
+        base = ch_offset + ch * ch_data_size
         channel_id = struct.unpack_from('<I', bdata, base)[0]
         time_arr = np.frombuffer(bdata, dtype=np.float32,
                                  count=DRS4_NSAMPLES,
@@ -185,12 +207,14 @@ def decode_drs4(bdata):
         })
 
     return {
-        'board_id':     board_id,
-        'trigger_cell': trigger_cell,
-        'n_channels':   n_channels,
-        'freq':         freq,
-        'tstamp_us':    tstamp_us,
-        'channels':     channels,
+        'board_id':      board_id,
+        'trigger_cell':  trigger_cell,
+        'n_channels':    n_channels,
+        'freq':          freq,
+        'tstamp_us':     tstamp_us,
+        'user_delay_ns': user_delay_ns,
+        'scaler':        scaler,
+        'channels':      channels,
     }
 
 
@@ -205,7 +229,9 @@ def build_tree_per_channel(events, run_number, output_file):
     tstamp       = np.zeros(1, dtype=np.int64)
     freq         = np.zeros(1, dtype=np.float32)
     trigger_cell = np.zeros(1, dtype=np.int32)
+    user_delay   = np.zeros(1, dtype=np.int32)
     channel      = np.zeros(1, dtype=np.int32)
+    scaler       = np.zeros(DRS4_NCHANNELS, dtype=np.uint32)
     time_arr     = np.zeros(DRS4_NSAMPLES, dtype=np.float32)
     wave_arr     = np.zeros(DRS4_NSAMPLES, dtype=np.float32)
 
@@ -214,7 +240,9 @@ def build_tree_per_channel(events, run_number, output_file):
     tree.Branch("tstamp_us",   tstamp,       "tstamp_us/L")
     tree.Branch("freq",        freq,         "freq/F")
     tree.Branch("trigger_cell", trigger_cell, "trigger_cell/I")
+    tree.Branch("user_delay_ns", user_delay,  "user_delay_ns/I")
     tree.Branch("channel",     channel,      "channel/I")
+    tree.Branch("scaler",      scaler,       "scaler[4]/i")
     tree.Branch("time",        time_arr,     "time[1024]/F")
     tree.Branch("wave",        wave_arr,     "wave[1024]/F")
 
@@ -225,7 +253,9 @@ def build_tree_per_channel(events, run_number, output_file):
             tstamp[0]       = ev['tstamp_us']
             freq[0]         = ev['freq']
             trigger_cell[0] = ev['trigger_cell']
+            user_delay[0]   = ev['user_delay_ns']
             channel[0]      = ch['channel_id']
+            scaler[:]       = ev['scaler']
             time_arr[:]     = ch['time']
             wave_arr[:]     = ch['wave']
             tree.Fill()
@@ -245,7 +275,9 @@ def build_tree_per_event(events, run_number, output_file):
     tstamp       = np.zeros(1, dtype=np.int64)
     freq         = np.zeros(1, dtype=np.float32)
     trigger_cell = np.zeros(1, dtype=np.int32)
+    user_delay   = np.zeros(1, dtype=np.int32)
     n_channels   = np.zeros(1, dtype=np.int32)
+    scaler       = np.zeros(DRS4_NCHANNELS, dtype=np.uint32)
     ch_id        = [np.zeros(1, dtype=np.int32)  for _ in range(DRS4_NCHANNELS)]
     ch_time      = [np.zeros(DRS4_NSAMPLES, dtype=np.float32) for _ in range(DRS4_NCHANNELS)]
     ch_wave      = [np.zeros(DRS4_NSAMPLES, dtype=np.float32) for _ in range(DRS4_NCHANNELS)]
@@ -255,7 +287,9 @@ def build_tree_per_event(events, run_number, output_file):
     tree.Branch("tstamp_us",   tstamp,       "tstamp_us/L")
     tree.Branch("freq",        freq,         "freq/F")
     tree.Branch("trigger_cell", trigger_cell, "trigger_cell/I")
+    tree.Branch("user_delay_ns", user_delay,  "user_delay_ns/I")
     tree.Branch("n_channels",  n_channels,   "n_channels/I")
+    tree.Branch("scaler",      scaler,       "scaler[4]/i")
     for c in range(DRS4_NCHANNELS):
         tree.Branch(f"ch{c}_id",   ch_id[c],   f"ch{c}_id/I")
         tree.Branch(f"ch{c}_time", ch_time[c], f"ch{c}_time[1024]/F")
@@ -267,7 +301,9 @@ def build_tree_per_event(events, run_number, output_file):
         tstamp[0]       = ev['tstamp_us']
         freq[0]         = ev['freq']
         trigger_cell[0] = ev['trigger_cell']
+        user_delay[0]   = ev['user_delay_ns']
         n_channels[0]   = ev['n_channels']
+        scaler[:]       = ev['scaler']
         for c in range(DRS4_NCHANNELS):
             ch_id[c][0]  = -1
             ch_time[c][:] = 0.0
