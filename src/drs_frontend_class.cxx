@@ -35,6 +35,19 @@ DRS4Frontend::DRS4Frontend()
 
 DRS4Frontend::~DRS4Frontend()
 {
+   // Stop and join any background thread (live_preview_loop or
+   // readout_loop, depending on whether a run is active) before tearing
+   // down the boards it dereferences.  Without this, Ctrl-C (or any path
+   // to frontend_exit() that doesn't go through end_of_run first) leaves
+   // the thread running and it dereferences m_boards/m_drs after the
+   // destructor frees them → SIGSEGV in m_boards[i]->GetScaler().
+   if (m_readout_thread) {
+      m_in_end_of_run = true;
+      m_readout_thread->join();
+      delete m_readout_thread;
+      m_readout_thread = nullptr;
+   }
+
    if (m_drs) {
       delete m_drs;
       m_drs = nullptr;
