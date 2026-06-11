@@ -11,6 +11,44 @@ This is a MIDAS frontend for DRS4 (Domino Ring Sampler 4) oscilloscope/digitizer
 - ODB-based configuration watched in real-time
 - Offline analysis: midas→root converter and waveform inspection notebook
 
+## Working Style
+
+Use the full set of available skills/tools for every operation — they exist
+to keep work organized, parallelizable, and reversible. Don't fall back to
+inline bash or off-the-cuff fixes when a dedicated mechanism is available.
+
+- **Plan non-trivial work**: for multi-step tasks, new features, or changes
+  that touch existing behavior, enter plan mode (`EnterPlanMode`) and get
+  sign-off before writing code.
+- **Track work in tasks**: use `TaskCreate` / `TaskUpdate` for any
+  multi-step job. Mark each task in_progress when you start, completed
+  when it's done — don't batch completions. The task list also gives
+  the user real-time visibility into progress.
+- **Clarify ambiguity early**: when a request has several reasonable
+  interpretations, or a commit/refactor could reasonably go multiple
+  ways, use `AskUserQuestion` to pick a direction before implementing.
+- **Delegate when appropriate**: use the `Agent` tool with a specialized
+  subagent (e.g. `Explore` for fast code lookup, `general-purpose` for
+  multi-step research) to parallelize independent work or to keep large
+  search results out of the main context. Write self-contained prompts —
+  the subagent doesn't see this conversation.
+- **Specialized tools over shell**: prefer `Read` / `Edit` / `Write` /
+  `NotebookEdit` for file work; reserve `Bash` for shell-only operations
+  (build, run, find, git). Avoid `cat`, `sed`, `awk`, `echo` in Bash.
+- **Invoke named skills via `Skill`**: when the user types
+  `/<skill-name>` or asks for something that matches a recognized skill,
+  invoke it via the `Skill` tool — never guess the implementation.
+- **Verify UI/frontend changes in a real browser** before reporting
+  them complete. Type checking and unit tests verify code, not features;
+  if you can't run the UI, say so explicitly rather than claiming success.
+- **Test risky/uncertain work in the background** (`run_in_background`)
+  and continue with other work rather than blocking. The harness
+  notifies you when the task completes.
+- **Be careful with hard-to-reverse actions** (push, force-push, reset,
+  rm -rf, drop tables, send messages): confirm with the user before
+  executing. Reversible local actions (file edits, tests) are fine
+  without confirmation.
+
 ## Build Commands
 
 ```bash
