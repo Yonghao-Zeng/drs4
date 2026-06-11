@@ -9,6 +9,7 @@ This is a MIDAS frontend for DRS4 (Domino Ring Sampler 4) oscilloscope/digitizer
 - MIDAS DAQ integration with waveform readout into MIDAS banks
 - Web-based control UI served via mhttpd
 - ODB-based configuration watched in real-time
+- Offline analysis: midas→root converter and waveform inspection notebook
 
 ## Build Commands
 
@@ -28,22 +29,27 @@ make
 
 | File | Role |
 |------|------|
-| `src/drs_frontend.cxx` | MIDAS frontend entry point with standard callbacks (frontend_init/exit, begin/end_of_run, poll_event, read_trigger_event) |
-| `src/drs_frontend_class.cxx` | `DRS4Frontend` class — board management, ODB watches, readout threads |
+| `src/drs_frontend.cxx` | MIDAS frontend entry point with standard callbacks (frontend_init/exit, begin/end_of_run, poll_event, read_trigger_event), crash signal handler |
+| `src/drs_frontend_class.cxx` | `DRS4Frontend` class — board management, ODB watches, readout threads, snapshot writer |
 | `src/DRS.cpp` / `include/DRS.h` | Pre-compiled DRS4 API (PSI distribution, no wxMutex) |
 | `web/drs4.html` | Web control UI using mjsonrpc for ODB access |
+| `analysis/drs4_midas2root.py` | Converts `.mid.lz4` recordings to ROOT files |
+| `analysis/drs4_waveforms.ipynb` | Jupyter notebook: load `.root`, plot waveforms |
 
 ### Data Flow
 
 1. **Live Preview**: `live_preview_loop()` thread continuously captures waveforms when no DAQ run is active, writes to `drs4_snapshot.json` for web display
-2. **DAQ Run**: `readout_loop()` thread captures triggered events into MIDAS ring buffer; `poll_event()`/`fill_midas_banks()` drain the ring buffer into MIDAS banks (DRS00, DRS01, ...)
+2. **DAQ Run**: `readout_loop()` thread captures triggered events into MIDAS ring buffer; `poll_event()`/`fill_midas_banks()` drain the ring buffer into MIDAS banks (DR00, DR01, ...)
 3. **Web UI**: Polls `drs4_snapshot.json` and ODB via mjsonrpc for live display
+4. **Offline**: `drs4_midas2root.py` parses the .mid.lz4 file and emits a ROOT file; `drs4_waveforms.ipynb` plots it
 
 ### ODB Structure
 
 ```
 /Equipment/DRS4/Settings/         — global Status, Refresh trigger, SnapshotWaveform
-/Equipment/DRS4/Settings/Boards/BoardN/  — per-board config (Frequency, TriggerLevel, DominoMode, etc.)
+/Equipment/DRS4/Settings/Boards/BoardN/  — per-board config: Sampling Rate, TriggerLevel,
+                                           TriggerLogic (OR/AND), EnableCH1..4, EnableEXT,
+                                           TriggerDelayNs, DominoActive, ReadoutMode, etc.
 /Equipment/DRS4History/Variables/ — Temp_BN, TrgRate_BN for history logging
 /Custom/DRS4&  →  /home/muon/midasExp/drs4/web/drs4.html  (mhttpd page link)
 ```
@@ -58,7 +64,19 @@ make
 
 - `live_preview_loop()` — runs when not in DAQ run; handles continuous oscilloscope capture
 - `readout_loop()` — runs during DAQ run; writes to ring buffer
-- These threads are mutually exclusive (joined at begin_of_run, restarted at end_of_run)
+- `update_trigger_rates()` — helper called by both loops (throttled to 5 Hz from `readout_loop`, every iteration from `live_preview_loop`); keeps ODB TrgRate_B{0,1,2,3,4} fresh during a run
+- These threads are mutually exclusive on the same `m_readout_thread` pointer (joined at begin/end_of_run transitions)
+- **Destructor joins the thread before destroying `m_boards`/`m_drs`**. Without this, Ctrl-C (or any path to `frontend_exit` that doesn't go through `end_of_run`) leaves the loop running and dereferences the dangling board pointers → SIGSEGV in `m_boards[i]->GetScaler()`. Set `m_in_end_of_run = true` and `join()` before freeing hardware state.
+
+### Trigger Source (REG_TRG_CONFIG)
+
+Written by `SetTriggerSource(src_mask)` (DRS.cpp:2304). For board type 8/9:
+
+- OR  path: bit 0=CH1, bit 1=CH2, bit 2=CH3, bit 3=CH4, bit 4=EXT
+- AND path: bit 8=CH1, bit 9=CH2, bit 10=CH3, bit 11=CH4, bit 12=EXT
+- TRANSP: bit 15 (transparent mode for analog trigger)
+
+`EnableCH1..4` set the CH bits at the active path's offset (0 for OR, 8 for AND). `EnableEXT` sets bit 4 (OR) or bit 12 (AND). Typical use is one or the other (channel triggers vs. external), but the hardware supports mixing — `apply_board_config` simply ORs all enabled sources into `src_mask`.
 
 ### DRS4 Mode Notes
 
@@ -121,6 +139,41 @@ in the C++ formula — the +29 only matters when reading back
 screen (left-aligned, positive-only):
 `return gridLeft + (t / screenNs) * screenWidth`.
 
+### DRxx Bank Layout
+
+Each MIDAS event contains one DRxx bank per board. The 44-byte header carries
+trigger metadata; the per-channel block is 8196 bytes (4 + 1024·4·2). At
+`DRS4_NCHANNELS=4` the total payload is 32828 bytes.
+
+```
+offset  0  uint32  board_id
+offset  4  uint32  trigger_cell       (T-marker position on the time axis)
+offset  8  uint32  n_channels         (always 4)
+offset 12  float   freq               (true sampling frequency, GHz)
+offset 16  uint64  tstamp_us          (Unix time, microseconds)
+offset 24  uint32  user_delay_ns      (UI value of TriggerDelayNs at capture)
+offset 28  uint32  scaler[4]          (per-channel hardware trigger counts)
+offset 44  per-channel blocks:
+              uint32  channel_id (0..3)
+              float   time[1024]     (chronological, [0..total_ns])
+              float   wave[1024]     (mV, after offsetCalib+extrapolation)
+```
+
+The legacy 24-byte header (no `user_delay_ns`, no `scaler`) is still
+decodable: `drs4_midas2root.py` falls back to it if the buffer is too
+short, filling the new fields with zeros, so old `.mid.lz4` files
+convert cleanly.
+
+### Atomic Snapshot Write
+
+`do_snapshot()` writes `drs4_snapshot.json` atomically: dump JSON to a
+sibling `.tmp`, `fsync()`, then `rename(2)` over the live path. `rename`
+is atomic on POSIX, so mhttpd reads either the previous complete
+snapshot or the new one — never a half-truncated file. Fixes the
+recurring mhttpd errors of the form `read of N returned M < N`. Uses
+raw POSIX I/O (`open`/`write`/`fsync`/`close`/`rename`) via `<unistd.h>`,
+`<fcntl.h>`, `<sys/stat.h>`.
+
 ### DRS4 API Differences vs Official Software
 
 | Aspect | Official (`drsosc`) | This frontend |
@@ -134,3 +187,19 @@ screen (left-aligned, positive-only):
 | Display order | FROM_STOP raw | chronological reordered |
 | Time axis | FROM_STOP order [0, total] | chronological [0, total] |
 | T marker position | GetTriggerCell (= stop cell) | user_delay on time axis (UI value = T position) |
+
+## Offline Analysis
+
+`analysis/drs4_midas2root.py runXXXXX.mid.lz4` produces `runXXXXX.root`
+with a single `t_wave` tree. Branches (per-channel mode, the default):
+`brd` (I), `tstamp_us` (L), `freq` (F), `trigger_cell` (I),
+`user_delay_ns` (I), `channel` (I), `scaler[4]` (i), `time[1024]` (F),
+`wave[1024]` (F). Use `--per-event` for a row-per-event layout with
+explicit `ch0..3` time/wave branches instead.
+
+`analysis/drs4_waveforms.ipynb` loads the file with `uproot`, summarises
+the run, and plots: (1) a single event with all 4 channels overlaid and
+the T-marker, (2) N events overlaid + mean ± 1σ for one channel,
+(3) a small-multiples grid of the first N events, (4) the trigger-cell
+and `user_delay_ns` distributions. Uses `entry_start`/`stop` so each
+event's arrays are loaded on demand, not all rows up front.
