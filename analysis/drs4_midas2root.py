@@ -8,6 +8,7 @@ Convert a DRS4 MIDAS .mid.lz4 file to a ROOT file with one tree:
         freq          (float)   true sampling frequency (GHz)
         trigger_cell  (int32)   T-marker position on the time axis
         user_delay_ns (int32)   UI value of TriggerDelayNs
+        hw_stop_cell  (int32)   raw hardware stop/trigger cell (0..1023)
         channel       (int32)   physical channel (0..3)
         scaler[4]     (uint32)  per-channel hardware trigger counts at capture
         time[1024]    (float32) chronological time array, [0, total_ns] ns
@@ -154,15 +155,17 @@ def decode_drs4(bdata):
         uint64  tstamp_us          (Unix time, microseconds)
         uint32  user_delay_ns      (UI value of TriggerDelayNs)
         uint32  scaler[4]          (per-channel hardware trigger counts)
+        uint32  hw_stop_cell       (raw hardware stop/trigger cell, 0..1023)
         per channel:
             uint32  channel_id
             float   time[1024]
             float   wave[1024]
 
-    The pre-0b110 layout used a 24-byte header (no user_delay_ns, no
-    scaler). decode_drs4() falls back to that layout if the buffer is
-    too short for the current one, populating the missing fields with
-    zeros, so old .mid.lz4 files still decode.
+    Layout detection is by buffer size, newest first: the 48-byte header
+    adds hw_stop_cell after scaler[4]; the previous 44-byte header omitted
+    it; the pre-0b110 layout used a 24-byte header (no user_delay_ns, no
+    scaler). Missing fields are filled with zeros so older .mid.lz4 files
+    still decode.
     """
     if len(bdata) < 24:
         return None
@@ -177,15 +180,23 @@ def decode_drs4(bdata):
     if n_channels == 0 or n_channels > DRS4_NCHANNELS:
         return None
 
-    if len(bdata) >= 44 + n_channels * ch_data_size:
-        # Current layout: 44-byte header includes user_delay_ns + scaler[4].
+    if len(bdata) >= 48 + n_channels * ch_data_size:
+        # Current layout: 48-byte header, adds hw_stop_cell after scaler[4].
         user_delay_ns = struct.unpack_from('<I', bdata, 24)[0]
-        scaler = list(struct.unpack_from('<4I', bdata, 28))
+        scaler        = list(struct.unpack_from('<4I', bdata, 28))
+        hw_stop_cell  = struct.unpack_from('<I', bdata, 44)[0]
+        ch_offset = 48
+    elif len(bdata) >= 44 + n_channels * ch_data_size:
+        # Previous layout: 44-byte header, no hw_stop_cell.
+        user_delay_ns = struct.unpack_from('<I', bdata, 24)[0]
+        scaler        = list(struct.unpack_from('<4I', bdata, 28))
+        hw_stop_cell  = 0
         ch_offset = 44
     elif len(bdata) >= 24 + n_channels * ch_data_size:
         # Legacy layout: 24-byte header, no per-event trigger metadata.
         user_delay_ns = 0
         scaler = [0, 0, 0, 0]
+        hw_stop_cell = 0
         ch_offset = 24
     else:
         return None
@@ -214,6 +225,7 @@ def decode_drs4(bdata):
         'tstamp_us':     tstamp_us,
         'user_delay_ns': user_delay_ns,
         'scaler':        scaler,
+        'hw_stop_cell':  hw_stop_cell,
         'channels':      channels,
     }
 
@@ -230,6 +242,7 @@ def build_tree_per_channel(events, run_number, output_file):
     freq         = np.zeros(1, dtype=np.float32)
     trigger_cell = np.zeros(1, dtype=np.int32)
     user_delay   = np.zeros(1, dtype=np.int32)
+    hw_stop      = np.zeros(1, dtype=np.int32)
     channel      = np.zeros(1, dtype=np.int32)
     scaler       = np.zeros(DRS4_NCHANNELS, dtype=np.uint32)
     time_arr     = np.zeros(DRS4_NSAMPLES, dtype=np.float32)
@@ -241,6 +254,7 @@ def build_tree_per_channel(events, run_number, output_file):
     tree.Branch("freq",        freq,         "freq/F")
     tree.Branch("trigger_cell", trigger_cell, "trigger_cell/I")
     tree.Branch("user_delay_ns", user_delay,  "user_delay_ns/I")
+    tree.Branch("hw_stop_cell", hw_stop,      "hw_stop_cell/I")
     tree.Branch("channel",     channel,      "channel/I")
     tree.Branch("scaler",      scaler,       "scaler[4]/i")
     tree.Branch("time",        time_arr,     "time[1024]/F")
@@ -254,6 +268,7 @@ def build_tree_per_channel(events, run_number, output_file):
             freq[0]         = ev['freq']
             trigger_cell[0] = ev['trigger_cell']
             user_delay[0]   = ev['user_delay_ns']
+            hw_stop[0]      = ev['hw_stop_cell']
             channel[0]      = ch['channel_id']
             scaler[:]       = ev['scaler']
             time_arr[:]     = ch['time']
@@ -276,6 +291,7 @@ def build_tree_per_event(events, run_number, output_file):
     freq         = np.zeros(1, dtype=np.float32)
     trigger_cell = np.zeros(1, dtype=np.int32)
     user_delay   = np.zeros(1, dtype=np.int32)
+    hw_stop      = np.zeros(1, dtype=np.int32)
     n_channels   = np.zeros(1, dtype=np.int32)
     scaler       = np.zeros(DRS4_NCHANNELS, dtype=np.uint32)
     ch_id        = [np.zeros(1, dtype=np.int32)  for _ in range(DRS4_NCHANNELS)]
@@ -288,6 +304,7 @@ def build_tree_per_event(events, run_number, output_file):
     tree.Branch("freq",        freq,         "freq/F")
     tree.Branch("trigger_cell", trigger_cell, "trigger_cell/I")
     tree.Branch("user_delay_ns", user_delay,  "user_delay_ns/I")
+    tree.Branch("hw_stop_cell", hw_stop,      "hw_stop_cell/I")
     tree.Branch("n_channels",  n_channels,   "n_channels/I")
     tree.Branch("scaler",      scaler,       "scaler[4]/i")
     for c in range(DRS4_NCHANNELS):
@@ -302,6 +319,7 @@ def build_tree_per_event(events, run_number, output_file):
         freq[0]         = ev['freq']
         trigger_cell[0] = ev['trigger_cell']
         user_delay[0]   = ev['user_delay_ns']
+        hw_stop[0]      = ev['hw_stop_cell']
         n_channels[0]   = ev['n_channels']
         scaler[:]       = ev['scaler']
         for c in range(DRS4_NCHANNELS):

@@ -1198,7 +1198,8 @@ function saveSetting(key, value) {
 
 // ---- localStorage persistence ----
 function saveDisplaySettings() {
-   var settings = { timeDiv: timeDiv, voltDiv: voltDiv, posOffset: posOffset };
+   var settings = { timeDiv: timeDiv, voltDiv: voltDiv, posOffset: posOffset,
+                    showChannel: showChannel };
    try { localStorage.setItem('drs4_display', JSON.stringify(settings)); } catch(e) {}
 }
 function loadDisplaySettings() {
@@ -1209,6 +1210,7 @@ function loadDisplaySettings() {
          if (s.timeDiv) timeDiv = s.timeDiv;
          if (s.voltDiv) voltDiv = s.voltDiv;
          if (s.posOffset) posOffset = s.posOffset;
+         if (s.showChannel && s.showChannel.length === 4) showChannel = s.showChannel;
       }
    } catch(e) {}
 }
@@ -1220,6 +1222,8 @@ function applyDisplaySettings() {
       var num = document.getElementById('PosValCH' + ch);
       if (slider) slider.value = posOffset[ch-1];
       if (num) num.value = posOffset[ch-1];
+      var show = document.getElementById('ShowCH' + ch);
+      if (show) show.checked = showChannel[ch-1];
    }
 }
 
@@ -1290,6 +1294,7 @@ function setup() {
          var el = document.getElementById('ShowCH' + ch);
          el.addEventListener('change', function() {
             showChannel[ch-1] = this.checked;
+            saveDisplaySettings();
             drawWaveform();
          });
       })(ch);

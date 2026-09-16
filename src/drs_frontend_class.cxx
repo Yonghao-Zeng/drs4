@@ -110,7 +110,8 @@ void DRS4Frontend::create_board_defaults(int board_index)
       {"CalibrateTiming",   false},
    });
 
-   board.connect_and_fix_structure(path);
+   // Adds missing keys, keeps existing board values (restart-safe).
+   board.connect(path);
 }
 
 /*------------------------------------------------------------------*/
@@ -165,10 +166,12 @@ void DRS4Frontend::rescan_boards()
 
    scan_boards();
 
+   // A rescan re-enumerates USB hardware; it must not reset the operator's
+   // per-board settings. Drop only slots that no longer have a board.
    HNDLE hDB, hKey;
    if (cm_get_experiment_database(&hDB, NULL) == SUCCESS) {
       char board_path[256];
-      for (int i = 0; i < DRS4_MAX_BOARDS; i++) {
+      for (int i = m_num_boards; i < DRS4_MAX_BOARDS; i++) {
          snprintf(board_path, sizeof(board_path), "%s/Boards/Board%d", m_settings_path.c_str(), i);
          if (db_find_key(hDB, 0, board_path, &hKey) == SUCCESS) {
             db_delete_key(hDB, hKey, FALSE);
@@ -179,10 +182,6 @@ void DRS4Frontend::rescan_boards()
    m_settings.connect(m_settings_path);
 
    for (int i = 0; i < m_num_boards; i++) {
-      char board_path[256];
-      snprintf(board_path, sizeof(board_path), "%s/Boards/Board%d", m_settings_path.c_str(), i);
-      midas::odb board;
-      board.connect_and_fix_structure(board_path);
       create_board_defaults(i);
       read_board_info(i);
    }
@@ -242,7 +241,11 @@ void DRS4Frontend::setup_odb_structure()
       {"Refresh",             false},
    });
 
-   default_settings.connect_and_fix_structure(m_settings_path);
+   // Preserve existing values: connect(path) adds keys that are missing but
+   // never overwrites or deletes the ones already in ODB. Using
+   // connect_and_fix_structure() here would delete any key not in this
+   // default map — including the whole Boards/ subtree.
+   default_settings.connect(m_settings_path);
    m_settings.connect(m_settings_path);
 
    for (int i = 0; i < m_num_boards; i++) {
@@ -425,6 +428,10 @@ void DRS4Frontend::apply_board_config(int i)
       if (enable_ext) {
          src_mask |= (1 << (4 + bit_offset));  // bit 4 (OR) or bit 12 (AND)
       }
+      // NOTE: REG_TRG_CONFIG bit 15 ("Enable Transparent Trigger", PSI's
+      // TriggerDialog ID_TRANS) is a *separate* trigger mode and must NOT be
+      // set here — it is not the same as SetTranspMode() (REG_CTRL bit 21).
+      // Setting it takes the board out of comparator-trigger mode.
       cm_msg(MINFO, "DRS4Frontend", "apply_board_config[%d]: trig_logic='%s' direct='%s' ext=%s -> bit_offset=%d -> src_mask=0x%04x",
              i, trig_logic.c_str(), trig_logic_direct.c_str(), enable_ext ? "on" : "off",
              bit_offset, src_mask);
@@ -780,6 +787,7 @@ void DRS4Frontend::do_snapshot()
    std::string json = "{\"timestamp\":\"" + std::string(timestamp) + "\"," +
                       "\"freq\":" + std::to_string(m_snapshot_freq) +
                       ",\"trigger_cell\":" + std::to_string(m_snapshot_trigger_cell) +
+                      ",\"hw_stop_cell\":" + std::to_string(m_snapshot_stop_cell) +
                       ",\"triggered\":" + triggered +
                       ",\"trig_mode\":" + trig_mode +
                       ",\"board\":" + std::to_string(m_snapshot_board) +
@@ -880,11 +888,11 @@ INT DRS4Frontend::init(const char *eq_name, const char *eq_filename, int index)
             db_delete_key(hDB, hKey, TRUE);
          }
       }
-      snprintf(stale_path, sizeof(stale_path), "/Equipment/%s/Settings", eq_name);
-      if (db_find_key(hDB, 0, stale_path, &hKey) == SUCCESS) {
-         db_delete_key(hDB, hKey, TRUE);
-         cm_msg(MINFO, "DRS4Frontend", "Removed stale ODB: %s", stale_path);
-      }
+      // NOTE: the live /Equipment/<name>/Settings tree is deliberately NOT
+      // deleted here. Board settings are operator configuration
+      // (threshold / polarity / delay / ...) and must survive a frontend
+      // restart, matching the FERS frontend. setup_odb_structure() below
+      // only fills in keys that are currently missing.
 
       if (db_find_key(hDB, 0, "/Custom/DRS4", &hKey) == SUCCESS) {
          db_delete_key(hDB, hKey, FALSE);
@@ -1304,6 +1312,7 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
       std::lock_guard<std::mutex> lock(m_snapshot_mutex);
       m_snapshot_freq = freq;
       m_snapshot_board = i;
+      m_snapshot_stop_cell = stop_cell;
 
       // Get calibrated waveform and time from DRS board.
       // Use FROM_STOP-consistent parameters (matching official DRS4 software):
@@ -1377,10 +1386,17 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
  *    offset 16  uint64  tstamp_us          (Unix time, microseconds)
  *    offset 24  uint32  user_delay_ns      (UI value of TriggerDelayNs)
  *    offset 28  uint32  scaler[4]          (per-channel hardware trigger counts)
- *    offset 44  per-channel blocks:
+ *    offset 44  uint32  hw_stop_cell       (raw GetStopCell(0), DRS cell 0..1023)
+ *    offset 48  per-channel blocks:
  *                uint32 channel_id (0..3)
  *                float  time[1024]  (chronological, [0..total_ns])
  *                float  wave[1024]  (mV, after offsetCalib+extrapolation)
+ *
+ *  hw_stop_cell is the hardware's own stop/trigger cell (GetStopCell ==
+ *  GetTriggerCell for DRS4, read from the readout trailer). It is the raw
+ *  DRS cell index and is NOT the same as trigger_cell, which is the UI's
+ *  T-marker position (user_delay mapped onto the time axis). Recorded so the
+ *  hardware trigger position can be compared against the requested delay.
  *
  *  Readout loop runs at full domino rate while m_run_active.  Boards
  *  are daisy-chained so StartDomino on all boards is followed by a
@@ -1390,7 +1406,7 @@ void DRS4Frontend::capture_and_snapshot(bool auto_mode)
 void DRS4Frontend::readout_loop()
 {
    try {
-   const int header_size = 44;
+   const int header_size = 48;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + DRS4_NCHANNELS * ch_data_size;
 
@@ -1427,10 +1443,42 @@ void DRS4Frontend::readout_loop()
       }
       if (master < 0) break;
 
+      // Wait for the master board to leave the busy state: the analog
+      // trigger stops the domino, the FPGA reads the analog data into RAM,
+      // then BIT_RUNNING clears.
+      //
+      // Auto mode: PSI's OsciThread software-triggers when no hardware
+      // trigger arrives for ~1 s, so the run keeps producing events without
+      // an external trigger (Osci.cpp:514-523). Mirror that here. In Normal
+      // mode we simply keep waiting, so a run with no trigger produces no
+      // events — matching PSI's Normal mode.
+      bool forced = false;
+      auto wait_start = std::chrono::steady_clock::now();
       int timeout = 100000;
       while (m_boards[master]->IsBusy() && !m_in_end_of_run) {
          usleep(10);
          if (--timeout <= 0) break;
+
+         if (!forced) {
+            auto waited_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - wait_start).count();
+            if (waited_ms >= 1000) {
+               forced = true;
+               char path[256];
+               snprintf(path, sizeof(path), "%s/Boards/Board%d/TriggerMode",
+                        m_settings_path.c_str(), master);
+               char mode_str[64] = "Auto";
+               HNDLE hDBm;
+               if (cm_get_experiment_database(&hDBm, NULL) == SUCCESS) {
+                  int size = sizeof(mode_str);
+                  db_get_value(hDBm, 0, path, mode_str, &size, TID_STRING, 0);
+               }
+               if (strcmp(mode_str, "Auto") == 0) {
+                  for (int bi = 0; bi < m_num_boards; bi++)
+                     if (m_board_hw_connected[bi]) m_boards[bi]->SoftTrigger();
+               }
+            }
+         }
       }
 
       if (m_in_end_of_run) break;
@@ -1488,6 +1536,12 @@ void DRS4Frontend::readout_loop()
          memcpy(pbuf + 24, &delay_ns,        4);
          memcpy(pbuf + 28, scaler,           4 * sizeof(uint32_t));
 
+         // Raw hardware stop/trigger cell for this capture (DRS cell 0..1023).
+         // Distinct from trig_tc (the UI T-marker index); lets the actual
+         // hardware trigger position be verified against the requested delay.
+         uint32_t hw_stop_cell = (uint32_t)stop_cell;
+         memcpy(pbuf + 44, &hw_stop_cell,    4);
+
          for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
             int drs_ch = ch * 2;
             float time_array[DRS4_NSAMPLES];
@@ -1543,6 +1597,7 @@ void DRS4Frontend::readout_loop()
             std::lock_guard<std::mutex> lock(m_snapshot_mutex);
             m_snapshot_freq = freq;
             m_snapshot_board = i;
+            m_snapshot_stop_cell = stop_cell;
             for (int ch = 0; ch < DRS4_NCHANNELS; ch++) {
                char *pch = pbuf + header_size + ch * ch_data_size;
                memcpy(m_snapshot_time[ch], pch + 4,
@@ -1593,10 +1648,11 @@ INT DRS4Frontend::is_data_available()
  *    uint64 tstamp_us
  *    uint32 user_delay_ns
  *    uint32 scaler[4]           (per-channel hardware trigger counts)
+ *    uint32 hw_stop_cell        (raw hardware stop/trigger cell, 0..1023)
  *    per-channel: uint32 channel_id, float time[1024], float wave[1024]
  *
- *  Total payload = 44 + n_channels * (4 + 1024*4*2) bytes.
- *  At DRS4_NCHANNELS=4 this is 32828 bytes per event.
+ *  Total payload = 48 + n_channels * (4 + 1024*4*2) bytes.
+ *  At DRS4_NCHANNELS=4 this is 32832 bytes per event.
  */
 INT DRS4Frontend::fill_midas_banks(char *pevent)
 {
@@ -1619,7 +1675,7 @@ INT DRS4Frontend::fill_midas_banks(char *pevent)
    memcpy(&n_channels,   pbuf + 8,  4);
    memcpy(&freq,         pbuf + 12, 4);
 
-   const int header_size = 44;
+   const int header_size = 48;
    const int ch_data_size = 4 + DRS4_NSAMPLES * sizeof(float) * 2;
    const int event_size = header_size + n_channels * ch_data_size;
    // Upper bound for a valid event: header + DRS4_NCHANNELS * channel block.

@@ -116,6 +116,15 @@ Written by `SetTriggerSource(src_mask)` (DRS.cpp:2304). For board type 8/9:
 
 `EnableCH1..4` set the CH bits at the active path's offset (0 for OR, 8 for AND). `EnableEXT` sets bit 4 (OR) or bit 12 (AND). Typical use is one or the other (channel triggers vs. external), but the hardware supports mixing — `apply_board_config` simply ORs all enabled sources into `src_mask`.
 
+**Bit 15 (TRANSP) is NOT set by this frontend.** PSI's "Enable Transparent Trigger" checkbox (`TriggerDialog` ID_TRANS) is a *separate* trigger mode; setting bit 15 takes the board out of comparator-trigger mode and produces no triggers. The `TranspMode` ODB setting maps to `SetTranspMode()` (REG_CTRL bit 21, "send DRS inputs to outputs") instead, which is a different feature.
+
+**Auto vs Normal during a run**: `readout_loop` waits for the hardware
+trigger to stop the domino. If no trigger arrives within ~1 s and the
+master board's `TriggerMode` is `Auto`, it issues `SoftTrigger()` to force a
+capture (mirroring PSI's `OsciThread`, Osci.cpp:514-523) so the run keeps
+producing events; in `Normal` mode it keeps waiting, so an untriggered run
+produces no events.
+
 ### DRS4 Mode Notes
 
 - **TriggerMode "Auto"** = free-running (DominoMode=1, continuous)
@@ -179,9 +188,9 @@ screen (left-aligned, positive-only):
 
 ### DRxx Bank Layout
 
-Each MIDAS event contains one DRxx bank per board. The 44-byte header carries
+Each MIDAS event contains one DRxx bank per board. The 48-byte header carries
 trigger metadata; the per-channel block is 8196 bytes (4 + 1024·4·2). At
-`DRS4_NCHANNELS=4` the total payload is 32828 bytes.
+`DRS4_NCHANNELS=4` the total payload is 32832 bytes.
 
 ```
 offset  0  uint32  board_id
@@ -191,16 +200,23 @@ offset 12  float   freq               (true sampling frequency, GHz)
 offset 16  uint64  tstamp_us          (Unix time, microseconds)
 offset 24  uint32  user_delay_ns      (UI value of TriggerDelayNs at capture)
 offset 28  uint32  scaler[4]          (per-channel hardware trigger counts)
-offset 44  per-channel blocks:
+offset 44  uint32  hw_stop_cell       (raw GetStopCell(0), DRS cell 0..1023)
+offset 48  per-channel blocks:
               uint32  channel_id (0..3)
               float   time[1024]     (chronological, [0..total_ns])
               float   wave[1024]     (mV, after offsetCalib+extrapolation)
 ```
 
-The legacy 24-byte header (no `user_delay_ns`, no `scaler`) is still
-decodable: `drs4_midas2root.py` falls back to it if the buffer is too
-short, filling the new fields with zeros, so old `.mid.lz4` files
-convert cleanly.
+`trigger_cell` is the **UI's** T-marker position (`user_delay` mapped onto
+the time axis) — it is computed, not measured. `hw_stop_cell` is the
+**hardware's** own stop/trigger cell, read from the readout trailer
+(`GetStopCell` == `GetTriggerCell` for DRS4); recording it allows the actual
+trigger position to be checked against the requested delay.
+
+Both the legacy 24-byte header (no `user_delay_ns`/`scaler`) and the
+previous 44-byte header (no `hw_stop_cell`) are still decodable:
+`drs4_midas2root.py` selects the layout by buffer size and fills the missing
+fields with zeros, so old `.mid.lz4` files convert cleanly.
 
 ### Atomic Snapshot Write
 
@@ -211,6 +227,31 @@ snapshot or the new one — never a half-truncated file. Fixes the
 recurring mhttpd errors of the form `read of N returned M < N`. Uses
 raw POSIX I/O (`open`/`write`/`fsync`/`close`/`rename`) via `<unistd.h>`,
 `<fcntl.h>`, `<sys/stat.h>`.
+
+### ODB Persistence
+
+Board settings in `/Equipment/DRS4/Settings` **survive a frontend restart**
+(matching the FERS frontend). `init()` no longer deletes the Settings tree,
+and the schema is applied with `connect(path)` — which adds missing keys but
+never overwrites or deletes existing ones — instead of
+`connect_and_fix_structure()`. The latter is `connect(path, false, true)`
+(odbxx.cxx:1498) and deletes every ODB key not present in the defaults map,
+which wiped the whole `Boards/` subtree on each start. `rescan_boards()` (the
+ODB `Refresh` toggle) likewise keeps the settings of boards that are still
+present and drops only slots beyond the current board count.
+
+### Run Transitions
+
+`frontend_init()` registers a `TR_STARTABORT` handler (as does the FERS
+frontend). MIDAS broadcasts `TR_STARTABORT` when *another* frontend's
+`TR_START` (`begin_of_run`) fails — `cm_transition` does **not** roll back on
+its own, it just sets `/Runinfo/Start abort` and returns, leaving
+already-started frontends running. The classic `mfe.cxx` framework registers
+handlers only for START/STOP/PAUSE/RESUME (mfe.cxx:2591), so without an
+explicit registration a frontend is skipped by the abort broadcast entirely.
+The handler stops the readout (via `end_of_run()`, returning to live
+preview) and sets the client run state to `STATE_STOPPED`, making a
+multi-frontend run atomic: one frontend failing to start stops the others.
 
 ### DRS4 API Differences vs Official Software
 
@@ -231,9 +272,9 @@ raw POSIX I/O (`open`/`write`/`fsync`/`close`/`rename`) via `<unistd.h>`,
 `analysis/drs4_midas2root.py runXXXXX.mid.lz4` produces `runXXXXX.root`
 with a single `t_wave` tree. Branches (per-channel mode, the default):
 `brd` (I), `tstamp_us` (L), `freq` (F), `trigger_cell` (I),
-`user_delay_ns` (I), `channel` (I), `scaler[4]` (i), `time[1024]` (F),
-`wave[1024]` (F). Use `--per-event` for a row-per-event layout with
-explicit `ch0..3` time/wave branches instead.
+`user_delay_ns` (I), `hw_stop_cell` (I), `channel` (I), `scaler[4]` (i),
+`time[1024]` (F), `wave[1024]` (F). Use `--per-event` for a row-per-event
+layout with explicit `ch0..3` time/wave branches instead.
 
 `analysis/drs4_waveforms.ipynb` loads the file with `uproot`, summarises
 the run, and plots: (1) a single event with all 4 channels overlaid and

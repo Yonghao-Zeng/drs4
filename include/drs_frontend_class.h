@@ -70,6 +70,7 @@ private:
    float m_snapshot_time[DRS4_NCHANNELS][DRS4_NSAMPLES]{};
    float m_snapshot_wave[DRS4_NCHANNELS][DRS4_NSAMPLES]{};
    int m_snapshot_trigger_cell{0};   // time-axis index of T marker (= user_delay * 1024 / total_ns)
+   int m_snapshot_stop_cell{0};      // raw hardware stop/trigger cell (GetStopCell(0), 0..1023)
    float m_snapshot_freq{0};
    int m_snapshot_board{0};
 

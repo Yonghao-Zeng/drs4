@@ -87,6 +87,9 @@ BOOL equipment_common_overwrite = TRUE;
 // Forward declarations for EQUIPMENT readout pointer
 INT read_trigger_event(char *pevent);
 
+// Forward declaration for the TR_STARTABORT handler registered in frontend_init
+INT startabort(INT run_number, char *error);
+
 // Global frontend instance
 static DRS4Frontend *gFe = nullptr;
 
@@ -123,7 +126,8 @@ INT frontend_init()
    try {
       gFe = new DRS4Frontend();
       INT status = gFe->init("DRS4", __FILE__, get_frontend_index());
-      return status;
+      if (status != SUCCESS)
+         return status;
    } catch (std::exception &e) {
       cm_msg(MERROR, "DRS400", "frontend_init exception: %s", e.what());
       return FE_ERR_HW;
@@ -131,6 +135,17 @@ INT frontend_init()
       cm_msg(MERROR, "DRS400", "frontend_init unknown exception");
       return FE_ERR_HW;
    }
+
+   // Register a TR_STARTABORT handler. MIDAS broadcasts TR_STARTABORT when
+   // *another* frontend's TR_START failed. The classic mfe.cxx framework
+   // registers handlers only for START/STOP/PAUSE/RESUME (mfe.cxx:2591), so
+   // without this the DRS4 readout would keep running while the rest of the
+   // experiment aborts. Without this registration the client is also skipped
+   // by the STARTABORT broadcast entirely.
+   if (cm_register_transition(TR_STARTABORT, startabort, 500) != CM_SUCCESS)
+      cm_msg(MERROR, "DRS400", "Cannot register TR_STARTABORT handler");
+
+   return SUCCESS;
 }
 
 INT frontend_exit()
@@ -149,6 +164,21 @@ INT begin_of_run(INT run_number, char *error)
 INT end_of_run(INT run_number, char *error)
 {
    if (gFe) return gFe->end_of_run();
+   return SUCCESS;
+}
+
+INT startabort(INT run_number, char *error)
+{
+   // A sibling frontend's begin_of_run failed and MIDAS is aborting the run.
+   // Stop our readout thread and fall back to live preview so the DRS4 is not
+   // left running while the experiment is torn down. end_of_run() is
+   // idempotent w.r.t. the readout thread and safe even if our own
+   // begin_of_run never completed.
+   cm_msg(MERROR, "DRS400",
+          "TR_STARTABORT for run %d: another frontend failed to start - stopping DRS4",
+          run_number);
+   if (gFe) gFe->end_of_run();
+   cm_set_client_run_state(STATE_STOPPED);
    return SUCCESS;
 }
 
