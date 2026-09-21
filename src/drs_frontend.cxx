@@ -104,11 +104,11 @@ EQUIPMENT equipment[] = {
          0,                  // event source
          "MIDAS",            // format
          TRUE,               // enabled
-         RO_RUNNING,          // read when running; do NOT write banks to /Equipment/DRS4/Variables/
+         RO_RUNNING,          // read when running
          100,                // poll period (ms)
          0,                  // event limit
          0,                  // subevent limit
-         0,                  // history period (0=disabled)
+         1,                  // log history: mlogger records /Equipment/DRS4/Variables
          "", "", "",          // log, foreground, background history
       },
       (INT(*)(char *, INT))read_trigger_event, // readout routine

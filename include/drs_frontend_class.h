@@ -54,11 +54,24 @@ private:
    // Total event counter per board (incremented in capture_and_snapshot).
    // Used to compute software-side Acq/s rate (matches official DRS4 software).
    std::atomic<uint64_t> m_event_cnt[DRS4_MAX_BOARDS]{};
-   // EMA of the trigger rate (Hz), smoothed across the 100ms scaler windows.
-   // Per-channel (ch0..3) + global (ch4) trigger rates, dynamically allocated
-   // to avoid a class-size-dependent heap corruption bug in this glibc/libusb
-   // combination. [boards * 5 channels]
+   // Running sum of the scaler samples over the current averaging window, and
+   // the sample count per board. GetScaler(c) already returns a per-second
+   // rate (counts in the 100 ms window x 10); at each Settings/TrgRateWindow
+   // boundary update_trigger_rates() publishes the mean over that window.
+   // Heap-allocated ([boards * 6] = ch0..3 + global + Acq, plus a per-board
+   // sample count) to avoid the class-size-dependent heap corruption bug in
+   // this glibc/libusb combination.
    double *m_trg_rate_ema{nullptr};
+   unsigned *m_rate_n{nullptr};     // per-board scaler sample count
+   // Rate-averaging window for update_trigger_rates() (s), live-adjustable via
+   // Settings/TrgRateWindow (s). Default 1 s; matches the FERS TrgRateWindow.
+   double m_trg_rate_window_s_{1.0};
+
+   // History: /Equipment/DRS4/Variables subtree (the DRS4 equipment has
+   // Common "Log history" = 1, so mlogger records these). update_trigger_rates
+   // (readout / live-preview thread) writes the per-second trigger rates here
+   // directly — mlogger hotlinks the keys, no periodic equipment needed.
+   midas::odb m_hist_vars;
 
    // Connect re-entry guard
    std::string m_last_connect_val;

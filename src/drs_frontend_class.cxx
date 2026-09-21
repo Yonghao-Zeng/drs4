@@ -56,6 +56,10 @@ DRS4Frontend::~DRS4Frontend()
       delete[] m_trg_rate_ema;
       m_trg_rate_ema = nullptr;
    }
+   if (m_rate_n) {
+      delete[] m_rate_n;
+      m_rate_n = nullptr;
+   }
 }
 
 /*------------------------------------------------------------------*/
@@ -239,6 +243,7 @@ void DRS4Frontend::setup_odb_structure()
    midas::odb default_settings({
       {"Status",              std::string("Initialized")},
       {"Refresh",             false},
+      {"TrgRateWindow (s)",   1.0f},
    });
 
    // Preserve existing values: connect(path) adds keys that are missing but
@@ -694,6 +699,13 @@ void DRS4Frontend::setup_watches()
       rescan_boards();
    });
 
+   // TrgRateWindow (s): live-adjustable trigger-rate averaging window.
+   m_settings["TrgRateWindow (s)"].watch([this](midas::odb &key) {
+      double v = 1.0;
+      try { v = (double)key; } catch (...) {}
+      if (v >= 0.1) m_trg_rate_window_s_ = v;
+   });
+
    for (int i = 0; i < m_num_boards; i++) {
       char board_path[256];
       snprintf(board_path, sizeof(board_path), "%s/Boards/Board%d", m_settings_path.c_str(), i);
@@ -916,8 +928,34 @@ INT DRS4Frontend::init(const char *eq_name, const char *eq_filename, int index)
 
    setup_odb_structure();
 
+   m_trg_rate_window_s_ = odb_get<double>(m_settings, "TrgRateWindow (s)", 1.0);
+
    for (int i = 0; i < m_num_boards; i++) {
       read_board_info(i);
+   }
+
+   // Create the trigger-rate Variables subtree so mlogger can log it (the
+   // DRS4 equipment's Common "Log history" is 1). Keys must exist at frontend
+   // startup (before mlogger builds its history list) or they are not logged
+   // until mlogger is restarted.
+   if (cm_get_experiment_database(&hDB, NULL) == SUCCESS) {
+      float zero = 0.0f;
+      for (int i = 0; i < m_num_boards; i++) {
+         char k[256];
+         snprintf(k, sizeof(k), "/Equipment/%s/Variables/TrgRate_B%d", eq_name, i);
+         db_set_value(hDB, 0, k, &zero, sizeof(zero), 1, TID_FLOAT);
+         for (int c = 0; c < 4; c++) {
+            snprintf(k, sizeof(k), "/Equipment/%s/Variables/TrgRate_B%d_Ch%d", eq_name, i, c+1);
+            db_set_value(hDB, 0, k, &zero, sizeof(zero), 1, TID_FLOAT);
+         }
+         snprintf(k, sizeof(k), "/Equipment/%s/Variables/TrgRate_B%d_Acq", eq_name, i);
+         db_set_value(hDB, 0, k, &zero, sizeof(zero), 1, TID_FLOAT);
+      }
+   }
+   {
+      char hv[256];
+      snprintf(hv, sizeof(hv), "/Equipment/%s/Variables", eq_name);
+      try { m_hist_vars.connect(hv); m_hist_vars.read(); } catch (...) {}
    }
 
    setup_ring_buffer();
@@ -950,37 +988,61 @@ INT DRS4Frontend::init(const char *eq_name, const char *eq_filename, int index)
 
 void DRS4Frontend::update_trigger_rates()
 {
-   // 1-second cadence for the Acq/s average.  Per-channel scalers and the
-   // global hardware trigger rate are refreshed on every call.
+   // GetScaler(c) already returns a per-second rate — it reads the hardware
+   // scaler (counts in the 100 ms window) and multiplies by 10 — and is
+   // inherently lumpy at low trigger rates. Accumulate the samples over a
+   // window of Settings/TrgRateWindow (s); at each window boundary publish the
+   // mean to BOTH the live Settings readout (custom page) and the history
+   // Variables subtree (mlogger hotlinks these keys; the DRS4 equipment's
+   // Common "Log history" = 1). The accumulators are heap-allocated:
+   // fixed-size members of this size trigger the known class-size-dependent
+   // heap corruption in this glibc/libusb combination.
+   if (!m_trg_rate_ema || !m_rate_n) return;
+
    auto now = std::chrono::system_clock::now();
    double now_s = std::chrono::duration<double>(now.time_since_epoch()).count();
    if (m_prev_time <= 0) m_prev_time = now_s;
    double dt = now_s - m_prev_time;
-   bool rate_tick = (dt >= 1.0);
-   if (rate_tick) m_prev_time = now_s;
+   bool window_done = (dt >= m_trg_rate_window_s_);
 
    for (int i = 0; i < m_num_boards; i++) {
       if (!m_board_hw_connected[i]) continue;
-      char key[64];
-      for (int c = 0; c < 4; c++) {
-         unsigned int s = m_boards[i]->GetScaler(c);
-         snprintf(key, sizeof(key), "TrgRate_B%d_CH%d", i, c+1);
-         try { m_settings[key] = (float)s; } catch (...) {}
-      }
-      unsigned int s4 = m_boards[i]->GetScaler(4);
-      snprintf(key, sizeof(key), "TrgRate_B%d", i);
-      try { m_settings[key] = (float)s4; } catch (...) {}
+      unsigned scaler[5];
+      for (int c = 0; c < 4; c++)
+         scaler[c] = m_boards[i]->GetScaler(c);
+      scaler[4] = m_boards[i]->GetScaler(4);
+      for (int c = 0; c < 5; c++)
+         m_trg_rate_ema[i * 6 + c] += scaler[c];
+      m_rate_n[i]++;
 
-      if (rate_tick) {
+      if (window_done) {
+         float rate[6];
+         for (int c = 0; c < 5; c++)
+            rate[c] = m_rate_n[i]
+                         ? (float)(m_trg_rate_ema[i * 6 + c] / m_rate_n[i]) : 0.0f;
          uint64_t cur_cnt = m_event_cnt[i].load(std::memory_order_relaxed);
          uint64_t delta = (m_prev_event_cnt[i] <= cur_cnt)
                             ? (cur_cnt - m_prev_event_cnt[i]) : 0;
-         double acq_rate = (dt > 0) ? (double)delta / dt : 0.0;
+         rate[5] = (dt > 0) ? (float)((double)delta / dt) : 0.0f;
          m_prev_event_cnt[i] = cur_cnt;
+         for (int c = 0; c < 5; c++) m_trg_rate_ema[i * 6 + c] = 0;
+         m_rate_n[i] = 0;
+
+         // Same value -> Settings (custom page) and history Variables.
+         char key[64];
+         snprintf(key, sizeof(key), "TrgRate_B%d", i);
+         try { m_settings[key] = rate[4]; m_hist_vars[key] = rate[4]; } catch (...) {}
+         for (int c = 0; c < 4; c++) {
+            snprintf(key, sizeof(key), "TrgRate_B%d_CH%d", i, c+1);
+            try { m_settings[key] = rate[c]; } catch (...) {}
+            snprintf(key, sizeof(key), "TrgRate_B%d_Ch%d", i, c+1);
+            try { m_hist_vars[key] = rate[c]; } catch (...) {}
+         }
          snprintf(key, sizeof(key), "TrgRate_B%d_Acq", i);
-         try { m_settings[key] = (float)acq_rate; } catch (...) {}
+         try { m_settings[key] = rate[5]; m_hist_vars[key] = rate[5]; } catch (...) {}
       }
    }
+   if (window_done) m_prev_time = now_s;
 }
 
 /*------------------------------------------------------------------*/
@@ -991,9 +1053,6 @@ INT DRS4Frontend::begin_of_run(int run_number, char *error)
 {
    m_in_end_of_run = false;
    m_run_active = false;
-
-   memset(m_prev_event_cnt, 0, sizeof(m_prev_event_cnt));
-   m_prev_time = 0;
 
    bool any_connected = false;
    for (int i = 0; i < m_num_boards; i++) {
@@ -1024,6 +1083,23 @@ INT DRS4Frontend::begin_of_run(int run_number, char *error)
    // mid-capture (TransferWaves + GetWave + GetTime), causing join() to
    // block long enough that MIDAS times out the rc_transition RPC.
    m_run_active = true;
+
+   // Baseline the trigger-rate measurement so the first samples cover only the
+   // run (not counts accumulated while idle): restart the averaging window
+   // against the current event counter.
+   m_prev_time = std::chrono::duration<double>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+   for (int i = 0; i < m_num_boards; i++) {
+      m_prev_event_cnt[i] = m_event_cnt[i].load(std::memory_order_relaxed);
+   }
+   if (m_trg_rate_ema) {
+      for (int i = 0; i < DRS4_MAX_BOARDS * 6; i++)
+         m_trg_rate_ema[i] = 0;   // averaging window restarts fresh for this run
+   }
+   if (m_rate_n) {
+      for (int i = 0; i < DRS4_MAX_BOARDS; i++)
+         m_rate_n[i] = 0;
+   }
 
    if (m_readout_thread) {
       m_readout_thread->join();
@@ -1122,12 +1198,19 @@ void DRS4Frontend::live_preview_loop()
    }
 
    // Initialize trigger rate measurement (dynamic allocation to avoid
-   // class-size-dependent heap corruption)
+   // class-size-dependent heap corruption). [boards * 6] running sums
+   // (ch0..3 + global + Acq) plus a per-board sample count.
    if (!m_trg_rate_ema) {
-      m_trg_rate_ema = new double[DRS4_MAX_BOARDS * 5]();
+      m_trg_rate_ema = new double[DRS4_MAX_BOARDS * 6]();
    }
-   for (int i = 0; i < DRS4_MAX_BOARDS * 5; i++) {
+   if (!m_rate_n) {
+      m_rate_n = new unsigned[DRS4_MAX_BOARDS]();
+   }
+   for (int i = 0; i < DRS4_MAX_BOARDS * 6; i++) {
       m_trg_rate_ema[i] = 0;
+   }
+   for (int i = 0; i < DRS4_MAX_BOARDS; i++) {
+      m_rate_n[i] = 0;
    }
 
    while (!m_in_end_of_run && !m_run_active) {
